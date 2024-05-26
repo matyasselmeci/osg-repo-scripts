@@ -126,17 +126,21 @@ class Distrepos:
 
     def __init__(
         self,
-        destroot: t.Union[os.PathLike, str],
+        dest_root: t.Union[os.PathLike, str],
+        working_root: t.Union[os.PathLike, str],
+        previous_root: t.Union[os.PathLike, str],
         koji_rsync: str,
         condor_rsync: str,
         taglist: t.List[Tag],
     ):
         self.taglist = taglist
-        self.destroot = Path(destroot)
-        self.newroot = self.destroot / ".new"
-        self.oldroot = self.destroot / ".old"
+        self.dest_root = Path(dest_root)
+        self.working_root = Path(working_root)
+        self.previous_root = Path(previous_root)
+
         self.koji_rsync = koji_rsync
         self.condor_rsync = condor_rsync
+        self.srpm_compat_symlink = True  # XXX should this be configurable? per tag?
 
     def check_rsync(self):
         """
@@ -176,25 +180,38 @@ class Distrepos:
         return successful, failed
 
     def run_one_tag(self, tag: Tag) -> bool:
-        destpath = self.newroot / tag.dest
-        linkpath = self.destroot / tag.dest
-        os.makedirs(destpath, exist_ok=True)
+        """
+        Run all the actions necessary to create a repo for one tag in the config.
+        Return True on success or False on failure.
+        """
+        release_path = self.dest_root / tag.dest
+        working_path = self.working_root / tag.dest
+        previous_path = self.previous_root / tag.dest
+        os.makedirs(working_path, exist_ok=True)
         latest_dir = self._get_latest_dir(tag.source)
         if not latest_dir:
             _log.error("Couldn't get the latest dir for tag %s", tag.name)
             return False
-        sourcepath = f"{self.koji_rsync}/{tag.source}/{latest_dir}/"
-        if not self._rsync_one_tag(sourcepath, destpath, linkpath):
+        source_url = f"{self.koji_rsync}/{tag.source}/{latest_dir}/"
+        if not self._rsync_one_tag(
+            source_url, dest_path=working_path, link_path=release_path
+        ):
             return False
-        if not self._rearrange_rpms(Path(destpath), tag.arches):
+        if not self._rearrange_rpms(working_path, tag.arches):
             return False
         if not self._merge_condor_repos(
             tag.condor_arch_repos, tag.condor_source_repos, tag.arches
         ):
             return False
-        if not self._run_createrepo(destpath, tag.arches):
+        if not self._run_createrepo(working_path, tag.arches):
             return False
-        if not self._run_repoview(destpath, tag.arches):
+        if not self._run_repoview(working_path, tag.arches):
+            return False
+        if not self._swap_dirs(
+            release_path=release_path,
+            working_path=working_path,
+            previous_path=previous_path,
+        ):
             return False
 
     def _get_latest_dir(self, tagdir: str) -> t.Optional[str]:
@@ -228,9 +245,9 @@ class Distrepos:
 
     @staticmethod
     def _rsync_with_link(
-        sourcepath: str,
-        destpath: t.Union[str, os.PathLike],
-        linkpath: t.Union[None, str, os.PathLike],
+        source_url: str,
+        dest_path: t.Union[str, os.PathLike],
+        link_path: t.Union[None, str, os.PathLike],
         description: str = "rsync",
     ) -> bool:
         """
@@ -244,11 +261,11 @@ class Distrepos:
             "--times",
             "--delete",
         ]
-        if linkpath and os.path.exists(linkpath):
-            args.append(f"--link-path={linkpath}")
+        if link_path and os.path.exists(link_path):
+            args.append(f"--link-path={link_path}")
         args += [
-            sourcepath,
-            destpath,
+            source_url,
+            dest_path,
         ]
         try:
             ret = rsync(*args, check=True)
@@ -267,7 +284,7 @@ class Distrepos:
             return False
         return True
 
-    def _rsync_one_tag(self, sourcepath, destpath, linkpath) -> bool:
+    def _rsync_one_tag(self, source_url, dest_path, link_path) -> bool:
         """
         rsync the distrepo from kojihub for one tag, linking to the RPMs in
         the previous repo if they exist
@@ -275,10 +292,10 @@ class Distrepos:
         # XXX rsync source and binaries separately so the rearranging doesn't
         # screw up the linking
         return self._rsync_with_link(
-            sourcepath, destpath, linkpath, "rsync from koji-hub"
+            source_url, dest_path, link_path, "rsync from koji-hub"
         )
 
-    def _rearrange_rpms(self, destpath: Path, arches: t.List[str]) -> bool:
+    def _rearrange_rpms(self, working_path: Path, arches: t.List[str]) -> bool:
         """
         Rearrange the rsynced RPMs to go from a distrepo layout to something resembling
         the old mash-created repo layout -- in particular, the repodata dirs need to
@@ -286,31 +303,34 @@ class Distrepos:
         the .repo files we ship.
 
         The mash-created repo layout looks like
-            (destpath)/source/SRPMS/{*.src.rpm,repodata/,repoview/}
-            (destpath)/x86_64/{*.rpm,repodata/,repoview/}
-            (destpath)/x86_64/debug/{*-{debuginfo,debugsource}*.rpm,repodata/,repoview/}
+            source/SRPMS/{*.src.rpm,repodata/,repoview/}
+            x86_64/{*.rpm,repodata/,repoview/}
+            x86_64/debug/{*-{debuginfo,debugsource}*.rpm,repodata/,repoview/}
 
         The distrepo layout looks like (where <X> is the first letter of the package name)
-            (destpath)/src/repodata/
-            (destpath)/src/pkglist
-            (destpath)/src/Packages/<X>/*.src.rpm
-            (destpath)/x86_64/repodata/
-            (destpath)/x86_64/pkglist
-            (destpath)/x86_64/debug/pkglist
-            (destpath)/x86_64/debug/repodata/
-            (destpath)/x86_64/Packages/<X>/{*.rpm, *-{debuginfo,debugsource}*.rpm}
+            src/repodata/
+            src/pkglist
+            src/Packages/<X>/*.src.rpm
+            x86_64/repodata/
+            x86_64/pkglist
+            x86_64/debug/pkglist
+            x86_64/debug/repodata/
+            x86_64/Packages/<X>/{*.rpm, *-{debuginfo,debugsource}*.rpm}
 
         Note that the debuginfo and debugsource rpm files are mixed in with the regular files.
         The "pkglist" files are text files listing the relative paths to the packages in the
         repo -- this is passed to `createrepo` to put the debuginfo and debugsource RPMs into
         separate repositories even though the files are mixed together.
         """
-        # First, SRPMs. No major rearranging needed, just src -> source/SRPMS
+        # First, SRPMs. Move src -> source/SRPMS or create a symlink
         try:
-            (destpath / "source").mkdir(parents=True, exist_ok=True)
-            if (destpath / "source/SRPMS").exists():
-                shutil.rmtree(destpath / "source/SRPMS")
-            shutil.move(destpath / "src", destpath / "source/SRPMS")
+            (working_path / "source").mkdir(parents=True, exist_ok=True)
+            if (working_path / "source/SRPMS").exists():
+                shutil.rmtree(working_path / "source/SRPMS")
+            if self.srpm_compat_symlink:
+                os.symlink(working_path / "src", working_path / "source/SRPMS")
+            else:
+                shutil.move(working_path / "src", working_path / "source/SRPMS")
         except OSError as err:
             _log.error("OSError rearranging SRPMs: %s", err, exc_info=_debug)
             return False
@@ -339,9 +359,9 @@ class Distrepos:
     ) -> bool:
         for repo in arch_repos:
             for arch in arches:
-                src = f"{self.condor_rsync}/{repo.src}/".replace("<ARCH>", arch)
-                dst = f"{self.newroot}/{repo.dst}/".replace("<ARCH>", arch)
-                link = f"{self.destroot}/{repo.dst}/".replace("<ARCH>", arch)
+                src = f"{self.condor_rsync}/{repo.src}/".replace("%{ARCH}", arch)
+                dst = f"{self.working_root}/{repo.dst}/".replace("%{ARCH}", arch)
+                link = f"{self.dest_root}/{repo.dst}/".replace("%{ARCH}", arch)
                 ok = self._rsync_with_link(
                     src, dst, link, description=f"rsync from condor repo for {arch}"
                 )
@@ -349,8 +369,8 @@ class Distrepos:
                     return False
         for repo in source_repos:
             src = f"{self.condor_rsync}/{repo.src}/"
-            dst = self.newroot / repo.dst
-            link = self.destroot / repo.dst
+            dst = self.working_root / repo.dst
+            link = self.dest_root / repo.dst
             ok = self._rsync_with_link(
                 src, dst, link, description=f"rsync from condor repo for SRPMS"
             )
@@ -358,11 +378,79 @@ class Distrepos:
                 return False
         return True
 
-    def _run_createrepo(self, destpath: Path, arches: t.List[str]) -> bool:
+    def _run_createrepo(self, working_path: Path, arches: t.List[str]) -> bool:
         raise NotImplementedError()
 
-    def _run_repoview(self, destpath: Path, arches: t.List[str]) -> bool:
+    def _run_repoview(self, working_path: Path, arches: t.List[str]) -> bool:
         raise NotImplementedError()
+
+    # XXX think of a better name
+    def _swap_dirs(
+        self, release_path: Path, working_path: Path, previous_path: Path
+    ) -> bool:
+        """
+        Update the published repos by moving the published dir to the 'previous' dir
+        and the working dir to the published dir.
+        """
+        # Sanity check: make sure we have something to move
+        if not working_path.exists():
+            _log.error("Cannot release new dir %s: it does not exist", working_path)
+            return False
+
+        # If we have an old previous path, clear it; also make sure its parents exist.
+        if previous_path.exists():
+            try:
+                shutil.rmtree(previous_path)
+            except OSError as err:
+                _log.error(
+                    "OSError clearing previous dir %s: %s",
+                    previous_path,
+                    err,
+                    exc_info=_debug,
+                )
+                return False
+        previous_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # If we already have something in the release path, move it to the previous path.
+        # Also create the parent dirs if necessary.
+        if release_path.exists():
+            try:
+                shutil.move(release_path, previous_path)
+            except OSError as err:
+                _log.error(
+                    "OSError moving release dir %s to previous dir %s: %s",
+                    release_path,
+                    previous_path,
+                    err,
+                    exc_info=_debug,
+                )
+                return False
+        release_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Now move the newly created repo to the release path.
+        try:
+            shutil.move(working_path, release_path)
+        except OSError as err:
+            _log.error(
+                "OSError moving working dir %s to release dir %s: %s",
+                working_path,
+                release_path,
+                err,
+                exc_info=_debug,
+            )
+            # Something failed. Undo, undo!
+            if previous_path.exists():
+                try:
+                    shutil.move(previous_path, release_path)
+                except OSError as err2:
+                    _log.error(
+                        "OSError moving previous dir %s back to release dir %s: %s",
+                        previous_path,
+                        release_path,
+                        err2,
+                        exc_info=_debug,
+                    )
+            return False
 
 
 #
@@ -394,7 +482,9 @@ def get_source_dest_opt(option: str) -> t.List[SrcDst]:
 
 
 def get_args(argv: t.List[str]) -> Namespace:
-    """Parse and validate command-line arguments"""
+    """
+    Parse command-line arguments
+    """
     parser = ArgumentParser(prog=argv[0], description=__doc__)
     parser.add_argument(
         "--config",
@@ -457,12 +547,12 @@ def setup_logging(args: Namespace, config: ConfigParser) -> None:
 def _expand_tagset(config: ConfigParser, tagset_section_name: str):
     """
     Expand a 'tagset' section into multiple 'tag' sections, substituting each
-    value of the tagset's 'dvers' option into "<EL>".
+    value of the tagset's 'dvers' option into "%{EL}".
     Modifies 'config' in-place.
     """
-    if "<EL>" not in tagset_section_name:
+    if "%{EL}" not in tagset_section_name:
         raise ConfigError(
-            f"Section name [{tagset_section_name}] does not contain '<EL>'"
+            f"Section name [{tagset_section_name}] does not contain '%{{EL}}'"
         )
     tagset_section = config[tagset_section_name]
     tagset_name = tagset_section_name.split(" ", 1)[1].strip()
@@ -479,7 +569,7 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
 
     # Loop over the dvers, expand into tag sections
     for dver in tagset_section["dvers"].split():
-        tag_name = tagset_name.replace("<EL>", dver)
+        tag_name = tagset_name.replace("%{EL}", dver)
         tag_section_name = f"tag {tag_name}"
         try:
             config.add_section(tag_section_name)
@@ -494,7 +584,7 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
             # Do not overwrite existing options
             if key in config[tag_section_name]:
                 continue
-            new_value = value.replace("<EL>", dver)
+            new_value = value.replace("%{EL}", dver)
             _log.debug("Setting {%s:%s} to %r", tag_section_name, key, new_value)
             config[tag_section_name][key] = new_value
 
@@ -556,8 +646,18 @@ def parse_config(args: Namespace, config: ConfigParser) -> Distrepos:
     if "options" not in config:
         raise ConfigError("Missing required section [options]")
     options_section = config["options"]
+    if args.destroot:
+        dest_root = args.destroot.rstrip("/")
+        working_root = dest_root + ".working"
+        previous_root = dest_root + ".previous"
+    else:
+        dest_root = options_section.get("dest_root", DEFAULT_DESTROOT).rstrip("/")
+        working_root = options_section.get("working_root", dest_root + ".working")
+        previous_root = options_section.get("previous_root", dest_root + ".previous")
     return Distrepos(
-        destroot=args.destroot or options_section.get("destroot", DEFAULT_DESTROOT),
+        dest_root=dest_root,
+        working_root=working_root,
+        previous_root=previous_root,
         condor_rsync=options_section.get("condor_rsync", DEFAULT_CONDOR_RSYNC),
         koji_rsync=options_section.get("koji_rsync", DEFAULT_KOJI_RSYNC),
         taglist=taglist,
@@ -593,15 +693,21 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
             _debug = False
 
     setup_logging(args, config)
-
     dr = parse_config(args, config)
-    dr.check_rsync()
-    successful, failed = dr.run()
 
+    _log.info("Program started")
+    dr.check_rsync()
+    _log.info("rsync check successful. Starting run for %d tags", len(dr.taglist))
+    successful, failed = dr.run()
+    _log.info("Run completed")
+
+    # Report on the results
+    successful_names = [it.name for it in successful]
+    failed_names = [it.name for it in failed]
     if successful:
-        _log.info("The following tags succeeded: %r", [tt.name for tt in successful])
+        _log.info("%d tags succeeded: %r", len(successful_names), successful_names)
     if failed:
-        _log.error("The following tags failed: %r", [tt.name for tt in failed])
+        _log.error("%d tags failed: %r", len(failed_names), failed_names)
         return ERR_FAILURES
     elif not successful:
         _log.error("No tags were pulled")
