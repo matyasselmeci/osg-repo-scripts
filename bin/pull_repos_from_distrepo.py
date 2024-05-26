@@ -44,6 +44,11 @@ _debug = False
 _log = logging.getLogger(__name__)
 
 
+#
+# Error classes
+#
+
+
 class ProgramError(RuntimeError):
     """
     Class for fatal errors during execution.  The `returncode` parameter
@@ -70,8 +75,34 @@ class MissingOptionError(ConfigError):
 
     def __init__(self, section_name: str, option_name: str):
         super().__init__(
-            f"Section {section_name} missing required option {option_name}"
+            f"Section [{section_name}] missing or empty required option {option_name}"
         )
+
+
+#
+# Data classes
+#
+
+
+class SrcDst(t.NamedTuple):
+    """A source/destination pair"""
+
+    src: str
+    dst: str
+
+
+class Tag(t.NamedTuple):
+    name: str
+    source: str
+    dest: str
+    condor_arch_repos: t.List[SrcDst]
+    condor_source_repos: t.List[SrcDst]
+    arches: t.List[str]
+
+
+#
+# Other functions
+#
 
 
 def rsync(*args, **kwargs):
@@ -88,24 +119,20 @@ def rsync(*args, **kwargs):
     return sp.run(cmd, **kwargs)
 
 
-class SrcDst(t.NamedTuple):
-    """A source/destination pair"""
-
-    src: str
-    dst: str
-
-
-class Tag(t.NamedTuple):
-    name: str
-    sourcedir: str
-    dest: str
-    condor_arch_repos: t.List[SrcDst]
-    condor_source_repos: t.List[SrcDst]
-    arches: t.List[str]
+#
+# Main Distrepos class
+#
 
 
 class Distrepos:
-    def __init__(self, destroot: str, koji_rsync: str, condor_rsync: str, taglist: t.List[Tag]):
+    """
+    The Distrepos class contains the parameters and code for one run of repo updates
+    of all tags in the config.
+    """
+
+    def __init__(
+        self, destroot: str, koji_rsync: str, condor_rsync: str, taglist: t.List[Tag]
+    ):
         self.taglist = taglist
         self.destroot = destroot
         self.newroot = destroot + ".new"
@@ -154,11 +181,11 @@ class Distrepos:
         destpath = os.path.join(self.newroot, tag.dest)
         linkpath = os.path.join(self.destroot, tag.dest)
         os.makedirs(destpath, exist_ok=True)
-        latest_dir = self._get_latest_dir(tag.sourcedir)
+        latest_dir = self._get_latest_dir(tag.source)
         if not latest_dir:
             _log.error("Couldn't get the latest dir for tag %s", tag.name)
             return False
-        sourcepath = f"{self.koji_rsync}/{tag.sourcedir}/{latest_dir}/"
+        sourcepath = f"{self.koji_rsync}/{tag.source}/{latest_dir}/"
         if not self._rsync_one_tag(sourcepath, destpath, linkpath):
             return False
         if not self._rearrange_rpms(destpath):
@@ -269,22 +296,9 @@ class Distrepos:
         raise NotImplementedError()
 
 
-def get_boolean_option(
-    name: str, args: Namespace, config: configparser.ConfigParser
-) -> bool:
-    """
-    Gets the value of a boolean config file option, which can also be
-    turned on by a command-line argument of the same name.
-    Raise ConfigError if the option is not a boolean.
-    """
-    try:
-        cmdarg = getattr(args, name, None)
-        if cmdarg is None:
-            return config["options"].getboolean(name, fallback=False)
-        else:
-            return bool(cmdarg)
-    except ValueError:
-        raise ConfigError(f"'{name}' must be a boolean")
+#
+# Functions for handling command-line arguments and config
+#
 
 
 def get_source_dest_opt(option: str) -> t.List[SrcDst]:
@@ -315,7 +329,7 @@ def get_args(argv: t.List[str]) -> Namespace:
     parser = ArgumentParser(prog=argv[0], description=__doc__)
     parser.add_argument(
         "--config",
-        default="/etc/pullrepos.conf",
+        default="/etc/distrepos.conf",
         help="Config file to pull tag and repository information from.",
     )
     parser.add_argument(
@@ -371,38 +385,108 @@ def setup_logging(args: Namespace, config: ConfigParser) -> None:
         _log.addHandler(rfh)
 
 
+def _expand_tagset(config: ConfigParser, tagset_section_name: str):
+    """
+    Expand a 'tagset' section into multiple 'tag' sections, substituting each
+    value of the tagset's 'dvers' option into "<EL>".
+    Modifies 'config' in-place.
+    """
+    if "<EL>" not in tagset_section_name:
+        raise ConfigError(
+            f"Section name [{tagset_section_name}] does not contain '<EL>'"
+        )
+    tagset_section = config[tagset_section_name]
+    tagset_name = tagset_section_name.split(" ", 1)[1].strip()
+
+    # Check for the option we're supposed to be looping over
+    if not tagset_section.get("dvers"):
+        raise MissingOptionError(tagset_section_name, "dvers")
+    # Also check for the options that are supposed to be in the 'tag' sections, otherwise
+    # we'd get some confusing error messages when we get to parsing those.
+    if not tagset_section.get("dest"):
+        raise MissingOptionError(tagset_section_name, "dest")
+    if not tagset_section.get("arches"):
+        raise MissingOptionError(tagset_section_name, "arches")
+
+    # Loop over the dvers, expand into tag sections
+    for dver in tagset_section["dvers"].split():
+        tag_name = tagset_name.replace("<EL>", dver)
+        tag_section_name = f"tag {tag_name}"
+        try:
+            config.add_section(tag_section_name)
+            _log.debug(
+                "Created section [%s] from [%s]", tag_section_name, tagset_section_name
+            )
+        except configparser.DuplicateSectionError:
+            pass
+        for key, value in tagset_section.items():
+            if key == "dvers":
+                continue
+            # Do not overwrite existing options
+            if key in config[tag_section_name]:
+                continue
+            new_value = value.replace("<EL>", dver)
+            _log.debug("Setting {%s:%s} to %r", tag_section_name, key, new_value)
+            config[tag_section_name][key] = new_value
+
+
+def _get_taglist_from_config(config: ConfigParser) -> t.List[Tag]:
+    """
+    Parse the 'tag' and 'tagset' sections in the config to return a list of Tag objects.
+    This calls _expand_tagset to expand tagset sections, which may modify the config object.
+    """
+    taglist = []
+
+    # First process tagsets; this needs to be in a separate loop because it creates
+    # tag sections.
+    for tagset_section_name in (
+        x for x in config.sections() if x.lower().startswith("tagset ")
+    ):
+        _expand_tagset(config, tagset_section_name)
+
+    # Now process the tag sections.
+    for section_name, section in config.items():
+        if not section.lower().startswith("tag "):
+            continue
+
+        tag_name = section_name.split(" ", 1)[1].strip()
+        source = section.get("source", tag_name)
+        dest = section.get("dest")
+        if not dest:
+            raise MissingOptionError(section_name, "dest")
+        arches = section.get("arches", "").split()
+        if not arches:
+            raise MissingOptionError(section_name, "arches")
+        condor_arch_repos = get_source_dest_opt(section.get("condor_arch_repos", ""))
+        condor_source_repos = get_source_dest_opt(
+            section.get("condor_source_repos", "")
+        )
+        taglist.append(
+            Tag(
+                name=tag_name,
+                source=source,
+                dest=dest,
+                arches=arches,
+                condor_arch_repos=condor_arch_repos,
+                condor_source_repos=condor_source_repos,
+            )
+        )
+
+    return taglist
+
+
 def parse_config(args: Namespace, config: ConfigParser) -> Distrepos:
     """
     Parse the config file and return the Distrepos object from the parameters.
     Apply any overrides from the command-line.
     """
-    if "options" not in config:
-        raise ConfigError("Missing required section 'options'")
-    options_section = config["options"]
-    taglist = []
-    for section_name, section in config.items():
-        if not section.lower().startswith("tag "):
-            continue
-        tag = section.split(" ", 1)[1].strip()
-        sourcedir = section.get("sourcedir", tag)
-        if "dest" not in section:
-            raise MissingOptionError(section_name, "dest")
-        if "arches" not in section:
-            raise MissingOptionError(section_name, "arches")
-        condor_arch_repos = get_source_dest_opt(section.get("condor_arch_repos"))
-        condor_source_repos = get_source_dest_opt(section.get("condor_source_repos"))
-        taglist.append(
-            Tag(
-                name=tag,
-                sourcedir=sourcedir,
-                dest=section["dest"],
-                arches=section["arches"].split(),
-                condor_arch_repos=condor_arch_repos,
-                condor_source_repos=condor_source_repos,
-            )
-        )
+    taglist = _get_taglist_from_config(config)
     if not taglist:
-        raise ConfigError("No 'tag' sections found")
+        raise ConfigError("No [tag ...] or [tagset ...] sections found")
+
+    if "options" not in config:
+        raise ConfigError("Missing required section [options]")
+    options_section = config["options"]
     return Distrepos(
         destroot=args.destroot or options_section.get("destroot", DEFAULT_DESTROOT),
         condor_rsync=options_section.get("condor_rsync", DEFAULT_CONDOR_RSYNC),
@@ -411,7 +495,19 @@ def parse_config(args: Namespace, config: ConfigParser) -> Distrepos:
     )
 
 
+#
+# Main function
+#
+
+
 def main(argv: t.Optional[t.List[str]] = None) -> int:
+    """
+    Main function. Parse arguments and config; set up logging and the parameters
+    for each run, then launch the run.
+
+    Return the exit code of the program.  Success (0) is if at least one tag succeeded
+    and no tags failed.
+    """
     global _debug
 
     args = get_args(argv or sys.argv)
@@ -419,7 +515,14 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
     config = ConfigParser(interpolation=ExtendedInterpolation())
     config.read(config_path)
 
-    _debug = get_boolean_option("debug", args, config)
+    if args.debug:
+        _debug = True
+    else:
+        try:
+            _debug = config.getboolean("options", "debug")
+        except configparser.Error:
+            _debug = False
+
     setup_logging(args, config)
 
     dr = parse_config(args, config)
