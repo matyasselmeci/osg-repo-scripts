@@ -8,22 +8,16 @@ definition files.  The list of repositories is pulled from a config file.
 import configparser
 import tempfile
 from configparser import ConfigParser, ExtendedInterpolation
-
-# import glob
 import logging
 import logging.handlers
 import os
-
-# import pathlib
 import re
-
-# import shutil
+import shutil
 import subprocess as sp
 import sys
 import typing as t
 from argparse import ArgumentParser, Namespace
-
-# from pathlib import Path
+from pathlib import Path
 
 
 MB = 1 << 20
@@ -113,7 +107,7 @@ def rsync(*args, **kwargs):
     kwargs.setdefault("stdout", sp.PIPE)
     kwargs.setdefault("stderr", sp.PIPE)
     kwargs.setdefault("encoding", "latin-1")
-    cmd = ["rsync"] + list(args)
+    cmd = ["rsync"] + [str(x) for x in args]
     if _debug:
         _log.debug("running %r %r", cmd, kwargs)
     return sp.run(cmd, **kwargs)
@@ -131,12 +125,12 @@ class Distrepos:
     """
 
     def __init__(
-        self, destroot: str, koji_rsync: str, condor_rsync: str, taglist: t.List[Tag]
+        self, destroot: t.Union[os.PathLike, str], koji_rsync: str, condor_rsync: str, taglist: t.List[Tag]
     ):
         self.taglist = taglist
-        self.destroot = destroot
-        self.newroot = destroot + ".new"
-        self.oldroot = destroot + ".old"
+        self.destroot = Path(destroot)
+        self.newroot = self.destroot / ".new"
+        self.oldroot = self.destroot / ".old"
         self.koji_rsync = koji_rsync
         self.condor_rsync = condor_rsync
 
@@ -178,8 +172,8 @@ class Distrepos:
         return successful, failed
 
     def run_one_tag(self, tag: Tag) -> bool:
-        destpath = os.path.join(self.newroot, tag.dest)
-        linkpath = os.path.join(self.destroot, tag.dest)
+        destpath = self.newroot / tag.dest
+        linkpath = self.destroot / tag.dest
         os.makedirs(destpath, exist_ok=True)
         latest_dir = self._get_latest_dir(tag.source)
         if not latest_dir:
@@ -188,9 +182,9 @@ class Distrepos:
         sourcepath = f"{self.koji_rsync}/{tag.source}/{latest_dir}/"
         if not self._rsync_one_tag(sourcepath, destpath, linkpath):
             return False
-        if not self._rearrange_rpms(destpath):
+        if not self._rearrange_rpms(Path(destpath), tag.arches):
             return False
-        if not self._merge_condor_repos(tag.condor_arch_repos, tag.condor_source_repos):
+        if not self._merge_condor_repos(tag.condor_arch_repos, tag.condor_source_repos, tag.arches):
             return False
         if not self._run_createrepo(destpath, tag.arches):
             return False
@@ -226,18 +220,20 @@ class Distrepos:
             # the directory on the remote side.
             return os.path.basename(os.readlink(destpath))
 
-    def _rsync_one_tag(self, sourcepath, destpath, linkpath) -> bool:
+    @staticmethod
+    def _rsync_with_link(sourcepath: str, destpath: t.Union[str, os.PathLike], linkpath: t.Union[None, str, os.PathLike], description: str = "rsync") -> bool:
         """
-        rsync the distrepo from kojihub for one tag, linking to the RPMs in
-        the previous repo if they exist
+        rsync from a remote URL sourcepath to the destination destpath, optionally
+        linking to files in linkpath.
+
+        Return True on success, False on failure
         """
-        # XXX isn't rearranging going to screw up linking?
         args = [
             "--recursive",
             "--times",
             "--delete",
         ]
-        if os.path.exists(linkpath):
+        if linkpath and os.path.exists(linkpath):
             args.append(f"--link-path={linkpath}")
         args += [
             sourcepath,
@@ -246,15 +242,13 @@ class Distrepos:
         try:
             ret = rsync(*args, check=True)
             _log.debug(
-                "Success in rsync from koji-hub\nStdout:\n%s\nStderr:\n%s",
+                f"{description}: Success.\nStdout:\n%s\nStderr:\n%s",
                 ret.stdout,
                 ret.stderr,
             )
-        except OSError as err:
-            raise ProgramError(ERR_RSYNC, f"Invoking rsync failed: {err}") from err
         except sp.CalledProcessError as err:
             _log.error(
-                "Return code %s in rsync from koji-hub\nStdout:\n%s\nStderr:\n%s",
+                f"{description}: Return code %s.\nStdout:\n%s\nStderr:\n%s",
                 err.returncode,
                 err.stdout,
                 err.stderr,
@@ -262,37 +256,87 @@ class Distrepos:
             return False
         return True
 
-    def _rearrange_rpms(self, destpath: str) -> bool:
-        # TODO Write code for rearranging
-        # The mash-created repo layout looks like
-        #   (root)/source/SRPMS/{*.src.rpm,repodata/,repoview/}
-        #   (root)/x86_64/{*.rpm,repodata/,repoview/}
-        #   (root)/x86_64/debug/{*-{debuginfo,debugsource}*.rpm,repodata/,repoview/}
-        #
-        # The distrepo layout looks like (where <X> is the first letter of the package name)
-        #   (root)/src/repodata/
-        #   (root)/src/pkglist
-        #   (root)/src/Packages/<X>/*.src.rpm
-        #   (root)/x86_64/repodata/
-        #   (root)/x86_64/pkglist
-        #   (root)/x86_64/debug/pkglist
-        #   (root)/x86_64/debug/repodata/
-        #   (root)/x86_64/Packages/<X>/{*.rpm, *-{debuginfo,debugsource}*.rpm}
-        # Note that the debuginfo and debugsource rpm files are mixed in with the regular files.
-        # The "pkglist" files are text files listing the relative paths to the packages in the
-        # repo -- this is passed to `createrepo` to put the debuginfo and debugsource RPMs into
-        # separate repositories even though the files are mixed together.
-        raise NotImplementedError()
+    def _rsync_one_tag(self, sourcepath, destpath, linkpath) -> bool:
+        """
+        rsync the distrepo from kojihub for one tag, linking to the RPMs in
+        the previous repo if they exist
+        """
+        # XXX rsync source and binaries separately so the rearranging doesn't
+        # screw up the linking
+        return self._rsync_with_link(sourcepath, destpath, linkpath, "rsync from koji-hub")
+
+    def _rearrange_rpms(self, destpath: Path, arches: t.List[str]) -> bool:
+        """
+        Rearrange the rsynced RPMs to go from a distrepo layout to something resembling
+        the old mash-created repo layout -- in particular, the repodata dirs need to
+        be in the same location as in the old repo layout, so we don't have to change
+        the .repo files we ship.
+
+        The mash-created repo layout looks like
+            (destpath)/source/SRPMS/{*.src.rpm,repodata/,repoview/}
+            (destpath)/x86_64/{*.rpm,repodata/,repoview/}
+            (destpath)/x86_64/debug/{*-{debuginfo,debugsource}*.rpm,repodata/,repoview/}
+
+        The distrepo layout looks like (where <X> is the first letter of the package name)
+            (destpath)/src/repodata/
+            (destpath)/src/pkglist
+            (destpath)/src/Packages/<X>/*.src.rpm
+            (destpath)/x86_64/repodata/
+            (destpath)/x86_64/pkglist
+            (destpath)/x86_64/debug/pkglist
+            (destpath)/x86_64/debug/repodata/
+            (destpath)/x86_64/Packages/<X>/{*.rpm, *-{debuginfo,debugsource}*.rpm}
+
+        Note that the debuginfo and debugsource rpm files are mixed in with the regular files.
+        The "pkglist" files are text files listing the relative paths to the packages in the
+        repo -- this is passed to `createrepo` to put the debuginfo and debugsource RPMs into
+        separate repositories even though the files are mixed together.
+        """
+        # First, SRPMs. No major rearranging needed, just src -> source/SRPMS
+        try:
+            (destpath / "source").mkdir(parents=True, exist_ok=True)
+            if (destpath / "source/SRPMS").exists():
+                shutil.rmtree(destpath / "source/SRPMS")
+            shutil.move(destpath / "src", destpath / "source/SRPMS")
+        except OSError as err:
+            _log.error("OSError rearranging SRPMs: %s", err, exc_info=_debug)
+            return False
+
+        # Next, binary RPMs.
+        for arch in arches:
+            try:
+                # XXX If we don't care about RPM locations just repodata/repoview locations then binary RPMs are already OK
+                pass
+            except OSError as err:
+                _log.error("OSError rearranging binary RPMs for arch %s: %s", arch, err, exc_info=_debug)
+                return False
+
+        raise True
 
     def _merge_condor_repos(
-        self, arch_repos: t.List[SrcDst], source_repos: t.List[SrcDst]
+        self, arch_repos: t.List[SrcDst], source_repos: t.List[SrcDst], arches: t.List[str]
     ) -> bool:
+        for repo in arch_repos:
+            for arch in arches:
+                src = f"{self.condor_rsync}/{repo.src}/".replace("<ARCH>", arch)
+                dst = f"{self.newroot}/{repo.dst}/".replace("<ARCH>", arch)
+                link = f"{self.destroot}/{repo.dst}/".replace("<ARCH>", arch)
+                ok = self._rsync_with_link(src, dst, link, description=f"rsync from condor repo for {arch}")
+                if not ok:
+                    return False
+        for repo in source_repos:
+            src = f"{self.condor_rsync}/{repo.src}/"
+            dst = self.newroot / repo.dst
+            link = self.destroot / repo.dst
+            ok = self._rsync_with_link(src, dst, link, description=f"rsync from condor repo for SRPMS")
+            if not ok:
+                return False
+        return True
+
+    def _run_createrepo(self, destpath: Path, arches: t.List[str]) -> bool:
         raise NotImplementedError()
 
-    def _run_createrepo(self, destpath: str, arches: t.List[str]) -> bool:
-        raise NotImplementedError()
-
-    def _run_repoview(self, destpath: str, arches: t.List[str]) -> bool:
+    def _run_repoview(self, destpath: Path, arches: t.List[str]) -> bool:
         raise NotImplementedError()
 
 
@@ -308,7 +352,7 @@ def get_source_dest_opt(option: str) -> t.List[SrcDst]:
         SRC2 -> DST2
     Returning a list of SrcDst objects.
     Blank lines are ignored.
-    Leading and trailing whitespace are stripped.
+    Leading and trailing whitespace and slashes are stripped.
     A warning is emitted for invalid lines.
     """
     ret = []
@@ -318,7 +362,7 @@ def get_source_dest_opt(option: str) -> t.List[SrcDst]:
             continue
         mm = re.fullmatch(r"(.+?)\s*->\s*(.+?)", line)
         if mm:
-            ret.append(SrcDst(mm.group(1), mm.group(2)))
+            ret.append(SrcDst(mm.group(1).strip("/"), mm.group(2).strip("/")))
         else:
             _log.warning("Skipping invalid source->dest line %r", line)
     return ret
