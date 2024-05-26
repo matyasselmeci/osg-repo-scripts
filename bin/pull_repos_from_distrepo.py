@@ -125,7 +125,11 @@ class Distrepos:
     """
 
     def __init__(
-        self, destroot: t.Union[os.PathLike, str], koji_rsync: str, condor_rsync: str, taglist: t.List[Tag]
+        self,
+        destroot: t.Union[os.PathLike, str],
+        koji_rsync: str,
+        condor_rsync: str,
+        taglist: t.List[Tag],
     ):
         self.taglist = taglist
         self.destroot = Path(destroot)
@@ -184,7 +188,9 @@ class Distrepos:
             return False
         if not self._rearrange_rpms(Path(destpath), tag.arches):
             return False
-        if not self._merge_condor_repos(tag.condor_arch_repos, tag.condor_source_repos, tag.arches):
+        if not self._merge_condor_repos(
+            tag.condor_arch_repos, tag.condor_source_repos, tag.arches
+        ):
             return False
         if not self._run_createrepo(destpath, tag.arches):
             return False
@@ -221,7 +227,12 @@ class Distrepos:
             return os.path.basename(os.readlink(destpath))
 
     @staticmethod
-    def _rsync_with_link(sourcepath: str, destpath: t.Union[str, os.PathLike], linkpath: t.Union[None, str, os.PathLike], description: str = "rsync") -> bool:
+    def _rsync_with_link(
+        sourcepath: str,
+        destpath: t.Union[str, os.PathLike],
+        linkpath: t.Union[None, str, os.PathLike],
+        description: str = "rsync",
+    ) -> bool:
         """
         rsync from a remote URL sourcepath to the destination destpath, optionally
         linking to files in linkpath.
@@ -263,7 +274,9 @@ class Distrepos:
         """
         # XXX rsync source and binaries separately so the rearranging doesn't
         # screw up the linking
-        return self._rsync_with_link(sourcepath, destpath, linkpath, "rsync from koji-hub")
+        return self._rsync_with_link(
+            sourcepath, destpath, linkpath, "rsync from koji-hub"
+        )
 
     def _rearrange_rpms(self, destpath: Path, arches: t.List[str]) -> bool:
         """
@@ -308,27 +321,39 @@ class Distrepos:
                 # XXX If we don't care about RPM locations just repodata/repoview locations then binary RPMs are already OK
                 pass
             except OSError as err:
-                _log.error("OSError rearranging binary RPMs for arch %s: %s", arch, err, exc_info=_debug)
+                _log.error(
+                    "OSError rearranging binary RPMs for arch %s: %s",
+                    arch,
+                    err,
+                    exc_info=_debug,
+                )
                 return False
 
         raise True
 
     def _merge_condor_repos(
-        self, arch_repos: t.List[SrcDst], source_repos: t.List[SrcDst], arches: t.List[str]
+        self,
+        arch_repos: t.List[SrcDst],
+        source_repos: t.List[SrcDst],
+        arches: t.List[str],
     ) -> bool:
         for repo in arch_repos:
             for arch in arches:
                 src = f"{self.condor_rsync}/{repo.src}/".replace("<ARCH>", arch)
                 dst = f"{self.newroot}/{repo.dst}/".replace("<ARCH>", arch)
                 link = f"{self.destroot}/{repo.dst}/".replace("<ARCH>", arch)
-                ok = self._rsync_with_link(src, dst, link, description=f"rsync from condor repo for {arch}")
+                ok = self._rsync_with_link(
+                    src, dst, link, description=f"rsync from condor repo for {arch}"
+                )
                 if not ok:
                     return False
         for repo in source_repos:
             src = f"{self.condor_rsync}/{repo.src}/"
             dst = self.newroot / repo.dst
             link = self.destroot / repo.dst
-            ok = self._rsync_with_link(src, dst, link, description=f"rsync from condor repo for SRPMS")
+            ok = self._rsync_with_link(
+                src, dst, link, description=f"rsync from condor repo for SRPMS"
+            )
             if not ok:
                 return False
         return True
