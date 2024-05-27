@@ -29,6 +29,7 @@ ERR_FAILURES = 5
 ERR_EMPTY = 6
 
 
+DEFAULT_CONFIG = "/etc/distrepos.conf"
 DEFAULT_CONDOR_RSYNC = "rsync://rsync.cs.wisc.edu/htcondor"
 DEFAULT_KOJI_RSYNC = "rsync://kojihub2000.chtc.wisc.edu/repos-dist"
 DEFAULT_DESTROOT = "/var/www/repo"
@@ -219,7 +220,9 @@ class Distrepos:
             ok, proc = rsync("--list-only", self.koji_rsync, timeout=timeout)
         except sp.TimeoutExpired:
             _log.critical(f"{description} timed out after {timeout} seconds")
-            raise ProgramError(ERR_RSYNC, "rsync from koji-hub timed out, cannot continue")
+            raise ProgramError(
+                ERR_RSYNC, "rsync from koji-hub timed out, cannot continue"
+            )
         log_rsync(
             proc,
             description,
@@ -291,7 +294,9 @@ class Distrepos:
         with tempfile.TemporaryDirectory as tempdir:
             destpath = os.path.join(tempdir.name, "latest")
             try:
-                ok, proc = rsync("-l", f"{self.koji_rsync}/{tagdir}/latest", destpath, timeout=180)
+                ok, proc = rsync(
+                    "-l", f"{self.koji_rsync}/{tagdir}/latest", destpath, timeout=180
+                )
             except sp.TimeoutExpired:
                 raise TagFailure("Timeout getting 'latest' dir")
             log_rsync(proc, "Getting 'latest' dir symlink")
@@ -415,9 +420,7 @@ class Distrepos:
                 # Walk the Packages directory tree and add the relative paths to the RPMs
                 # (relative from src_dir) to the pkglist file.
                 # Using os.walk() because Path.walk() is not available in Python 3.6
-                for dirpath, _, filenames in os.walk(
-                    src_packages_dir
-                ):
+                for dirpath, _, filenames in os.walk(src_packages_dir):
                     for fn in filenames:
                         if not fn.endswith(".src.rpm"):
                             continue
@@ -594,13 +597,19 @@ def get_args(argv: t.List[str]) -> Namespace:
     parser = ArgumentParser(prog=argv[0], description=__doc__)
     parser.add_argument(
         "--config",
-        default="/etc/distrepos.conf",
-        help="Config file to pull tag and repository information from.",
+        default=DEFAULT_CONFIG,
+        help="Config file to pull tag and repository information from. Default: %(default)s",
     )
+    # parser.add_argument(
+    #     "--debug",
+    #     action="store_true",
+    #     help="Output debug messages",
+    # )
     parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Output debug messages",
+        "--no-debug",
+        dest="debug",
+        action="store_false",
+        help="Do not output debug messages",
     )
     parser.add_argument(
         "--logfile",
