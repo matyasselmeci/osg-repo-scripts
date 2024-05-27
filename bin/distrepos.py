@@ -620,7 +620,7 @@ def get_args(argv: t.List[str]) -> Namespace:
         "--destroot",
         default="",
         help="Top of destination directory; individual repos will be placed "
-        "relative to this directory.",
+        "relative to this directory. Default: %s" % DEFAULT_DESTROOT,
     )
     args = parser.parse_args(argv[1:])
     return args
