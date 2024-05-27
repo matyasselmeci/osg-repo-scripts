@@ -143,6 +143,10 @@ def rsync_with_link(
     ]
     if recursive:
         args.append("--recursive")
+    else:
+        args.append(
+            "--dirs"
+        )  # rsync --delete errors out if neither --recursive nor --dirs are specified
     if link_path and os.path.exists(link_path):
         args.append(f"--link-path={link_path}")
     args += [
