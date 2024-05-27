@@ -28,6 +28,8 @@ ERR_RSYNC = 4
 ERR_FAILURES = 5
 ERR_EMPTY = 6
 
+RSYNC_OK = 0
+RSYNC_NOT_FOUND = 23
 
 DEFAULT_CONFIG = "/etc/distrepos.conf"
 DEFAULT_CONDOR_RSYNC = "rsync://rsync.cs.wisc.edu/htcondor"
@@ -126,11 +128,22 @@ def rsync(*args, **kwargs) -> t.Tuple[bool, sp.CompletedProcess]:
     return proc.returncode == 0, proc
 
 
+def rsync_exists(remote_url: str) -> bool:
+    ok, proc = rsync(["--list-only", remote_url])
+    if proc.returncode == 0:
+        return True
+    elif proc.returncode == 23:
+        return False
+    else:
+        pass  # XXX now what?
+
+
 def rsync_with_link(
     source_url: str,
     dest_path: t.Union[str, os.PathLike],
     link_path: t.Union[None, str, os.PathLike],
     recursive=True,
+        delete=True,
 ) -> t.Tuple[bool, sp.CompletedProcess]:
     """
     rsync from a remote URL sourcepath to the destination destpath, optionally
@@ -139,14 +152,14 @@ def rsync_with_link(
     """
     args = [
         "--times",
-        "--delete",
     ]
+    if delete:
+        args.append("--delete")
     if recursive:
         args.append("--recursive")
-    else:
-        args.append(
-            "--dirs"
-        )  # rsync --delete errors out if neither --recursive nor --dirs are specified
+    elif delete:
+        # rsync --delete errors out if neither --recursive nor --dirs are specified
+        args.append("--dirs")
     if link_path and os.path.exists(link_path):
         args.append(f"--link-path={link_path}")
     args += [
@@ -161,16 +174,27 @@ def log_rsync(
     description: str = "rsync",
     success_level=logging.DEBUG,
     failure_level=logging.ERROR,
+        not_found_is_ok=False,
 ):
     """
     log the result of an rsync() call.  The log level and message are based on
-    its success or failure (i.e., returncode == 0).
+    its success or failure (i.e., returncode == 0).  If not_found_is_ok is True,
+    then a source file not found (returncode == 23) is also considered ok.
     """
-    ok = proc.returncode == 0
+    not_found = proc.returncode == RSYNC_NOT_FOUND
+    ok = proc.returncode == RSYNC_OK
     if ok:
         _log.log(
             success_level,
             "%s succeeded\nStdout:\n%s\nStderr:\n%s",
+            description,
+            proc.stdout,
+            proc.stderr,
+        )
+    elif not_found and not_found_is_ok:
+        _log.log(
+            success_level,
+            "%s did not find source\nStdout:\n%s\nStderr:\n%s",
             description,
             proc.stdout,
             proc.stderr,
@@ -399,9 +423,14 @@ class Distrepos:
                 dst = f"{self.working_root}/{repo.dst}/".replace("%{ARCH}", arch)
                 link = f"{self.dest_root}/{repo.dst}/".replace("%{ARCH}", arch)
                 description = f"rsync from condor repo for {arch}"
-                ok, proc = rsync_with_link(src, dst, link, recursive=False)
+                ok, proc = rsync_with_link(src, dst, link, delete=False, recursive=False)
                 log_rsync(proc, description)
                 if not ok:
+                    raise TagFailure(f"Error merging condor repos: {description}")
+                description = f"rsync debuginfo from condor repo for {arch}"
+                _, proc = rsync_with_link(src + "debug/", dst, link, delete=False, recursive=False)
+                log_rsync(proc, description, not_found_is_ok=True)
+                if proc.returncode not in {RSYNC_OK, RSYNC_NOT_FOUND}:
                     raise TagFailure(f"Error merging condor repos: {description}")
 
         for repo in source_repos:
