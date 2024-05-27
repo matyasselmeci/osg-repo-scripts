@@ -291,8 +291,8 @@ class Distrepos:
         the symlink to a temporary directory and reading it.  (We don't want to use
         the "latest" symlink directly since it may change mid-run.)
         """
-        with tempfile.TemporaryDirectory as tempdir:
-            destpath = os.path.join(tempdir.name, "latest")
+        with tempfile.TemporaryDirectory() as tempdir:
+            destpath = os.path.join(tempdir, "latest")
             try:
                 ok, proc = rsync(
                     "-l", f"{self.koji_rsync}/{tagdir}/latest", destpath, timeout=180
