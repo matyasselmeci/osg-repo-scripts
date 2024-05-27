@@ -292,7 +292,8 @@ class Distrepos:
             # the directory on the remote side.
             return os.path.basename(os.readlink(destpath))
 
-    def _rsync_one_tag(self, source_url, dest_path, link_path):
+    @staticmethod
+    def _rsync_one_tag(source_url, dest_path, link_path):
         """
         rsync the distrepo from kojihub for one tag, linking to the RPMs in
         the previous repo if they exist
@@ -395,25 +396,35 @@ class Distrepos:
         pkglist.
         """
         _log.debug("_update_pkglist_files(%r, %r)", working_path, arches)
+        # Update pkglist files for SRPMs.  There's no such thing as a debuginfo SRPM so
+        # we don't have to handle those.
         src_dir = working_path / "src"
         src_pkglist = src_dir / "pkglist"
         src_packages_dir = src_dir / "Packages"
         try:
             with open(f"{src_pkglist}.new", "wt") as new_pkglist_fh:
+                # Walk the Packages directory tree and add the relative paths to the RPMs
+                # (relative from src_dir) to the pkglist file.
+                # Using os.walk() because Path.walk() is not available in Python 3.6
                 for dirpath, _, filenames in os.walk(
                     src_packages_dir
-                ):  # Path.walk() is not available in Python 3.6
+                ):
                     for fn in filenames:
                         if not fn.endswith(".src.rpm"):
                             continue
                         rpm_path = os.path.join(os.path.relpath(dirpath, src_dir), fn)
                         print(rpm_path, file=new_pkglist_fh)
+
+            # New file written; move it into place, overwriting the old one.
             shutil.move(f"{src_pkglist}.new", src_pkglist)
         except OSError as err:
             raise TagFailure(
                 f"OSError updating pkglist file {src_pkglist}: {err}"
             ) from err
 
+        # Update pkglist files for binary RPMs for each arch.  Each arch has its
+        # own directory with a pkglist file, and a debug subdirectory with another
+        # pkglist file.  However, the binary RPMs themselves are mixed together.
         for arch in arches:
             arch_dir = working_path / arch
             arch_pkglist = arch_dir / "pkglist"
@@ -422,10 +433,14 @@ class Distrepos:
             arch_debug_pkglist = arch_debug_dir / "pkglist"
             try:
                 arch_debug_dir.mkdir(parents=True, exist_ok=True)
+                # We have one directory tree to walk but two files to write.
                 with open(f"{arch_pkglist}.new", "wt") as new_pkglist_fh, open(
                     f"{arch_debug_pkglist}.new", "wt"
                 ) as new_debug_pkglist_fh:
 
+                    # Walk the Packages directory tree and add the relative paths to the RPMs
+                    # (relative from src_dir) to the appropriate pkglist file.
+                    # Using os.walk() because Path.walk() is not available in Python 3.6
                     for dirpath, _, filenames in os.walk(arch_packages_dir):
                         for fn in filenames:
                             if not fn.endswith(".rpm"):
@@ -442,6 +457,8 @@ class Distrepos:
                                     os.path.relpath(dirpath, arch_dir), fn
                                 )
                                 print(rpm_path, file=new_pkglist_fh)
+
+                # New files written; move them into place, overwriting old ones.
                 shutil.move(f"{arch_pkglist}.new", arch_pkglist)
                 shutil.move(f"{arch_debug_pkglist}.new", arch_debug_pkglist)
             except OSError as err:
