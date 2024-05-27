@@ -105,10 +105,11 @@ class Tag(t.NamedTuple):
 #
 
 
-def rsync(*args, **kwargs):
+def rsync(*args, **kwargs) -> t.Tuple[bool, sp.CompletedProcess]:
     """
     A wrapper around `subprocess.run` that runs rsync, capturing the output
     and error, printing the command to be run if we're in debug mode.
+    Returns an (ok, CompletedProcess) tuple where ok is True if the return code is 0.
     """
     kwargs.setdefault("stdout", sp.PIPE)
     kwargs.setdefault("stderr", sp.PIPE)
@@ -116,7 +117,65 @@ def rsync(*args, **kwargs):
     cmd = ["rsync"] + [str(x) for x in args]
     if _debug:
         _log.debug("running %r %r", cmd, kwargs)
-    return sp.run(cmd, **kwargs)
+    try:
+        proc = sp.run(cmd, **kwargs)
+    except OSError as err:
+        # This is usually caused by something like rsync not being found
+        raise ProgramError(ERR_RSYNC, f"Invoking rsync failed: {err}") from err
+    return proc.returncode == 0, proc
+
+
+def rsync_with_link(
+    source_url: str,
+    dest_path: t.Union[str, os.PathLike],
+    link_path: t.Union[None, str, os.PathLike],
+) -> t.Tuple[bool, sp.CompletedProcess]:
+    """
+    rsync from a remote URL sourcepath to the destination destpath, optionally
+    linking to files in linkpath.
+    """
+    args = [
+        "--recursive",
+        "--times",
+        "--delete",
+    ]
+    if link_path and os.path.exists(link_path):
+        args.append(f"--link-path={link_path}")
+    args += [
+        source_url,
+        dest_path,
+    ]
+    return rsync(*args)
+
+
+def log_rsync(
+    proc: sp.CompletedProcess,
+    description: str = "rsync",
+    success_level=logging.DEBUG,
+    failure_level=logging.ERROR,
+):
+    """
+    log the result of an rsync() call.  The log level and message are based on
+    its success or failure (i.e., returncode == 0).
+    """
+    ok = proc.returncode == 0
+    if ok:
+        _log.log(
+            success_level,
+            "%s succeeded\nStdout:\n%s\nStderr:\n%s",
+            description,
+            proc.stdout,
+            proc.stderr,
+        )
+    else:
+        _log.log(
+            failure_level,
+            "%s failed with exit code %d\nStdout:\n%s\nStderr:\n%s",
+            description,
+            proc.returncode,
+            proc.stdout,
+            proc.stderr,
+        )
 
 
 #
@@ -154,24 +213,14 @@ class Distrepos:
         Run an rsync listing of the rsync root. If this fails, there is no point
         in proceeding further.
         """
-        try:
-            ret = rsync("--list-only", self.koji_rsync, check=True)
-            _log.debug(
-                "koji-hub rsync endpoint directory listing succeeded\n"
-                "Stdout:\n%s\n"
-                "Stderr:\n%s",
-                ret.stdout,
-                ret.stderr,
-            )
-        except OSError as err:
-            raise ProgramError(ERR_RSYNC, f"Invoking rsync failed: {err}") from err
-        except sp.CalledProcessError as err:
-            raise ProgramError(
-                ERR_RSYNC,
-                f"koji-hub rsync endpoint directory listing failed with exit code {err.returncode}\n"
-                f"Stdout:\n{err.stdout}\n"
-                f"Stderr:\n{err.stderr}\n",
-            )
+        ok, proc = rsync("--list-only", self.koji_rsync)
+        log_rsync(
+            proc,
+            f"koji-hub rsync endpoint {self.koji_rsync} directory listing",
+            failure_level=logging.CRITICAL,
+        )
+        if not ok:
+            raise ProgramError(ERR_RSYNC, "rsync from koji-hub failed, cannot continue")
 
     def run(self) -> t.Tuple[t.List[Tag], t.List[Tag]]:
         """
@@ -198,7 +247,10 @@ class Distrepos:
             os.makedirs(working_path, exist_ok=True)
         except OSError as err:
             _log.error(
-                "OSError creating working dir %s: %s", working_path, err, exc_info=_debug
+                "OSError creating working dir %s: %s",
+                working_path,
+                err,
+                exc_info=_debug,
             )
             return False
         latest_dir = self._get_latest_dir(tag.source)
@@ -211,9 +263,7 @@ class Distrepos:
             self._merge_condor_repos(
                 tag.condor_arch_repos, tag.condor_source_repos, tag.arches
             )
-            self._update_pkglist_files(
-                working_path, tag.arches
-            )
+            self._update_pkglist_files(working_path, tag.arches)
             self._run_createrepo(working_path, tag.arches)
             self._run_repoview(working_path, tag.arches)
             self._update_release_repos(
@@ -234,68 +284,13 @@ class Distrepos:
         """
         with tempfile.TemporaryDirectory as tempdir:
             destpath = os.path.join(tempdir.name, "latest")
-            try:
-                ret = rsync(
-                    "-l", f"{self.koji_rsync}/{tagdir}/latest", destpath, check=True
-                )
-                _log.debug(
-                    "Success in rsync\nStdout:\n%s\nStderr:\n%s", ret.stdout, ret.stderr
-                )
-            except OSError as err:
-                raise ProgramError(ERR_RSYNC, f"Invoking rsync failed: {err}") from err
-            except sp.CalledProcessError as err:
-                # XXX what does rsync return for file not found?
-                _log.error(
-                    "Return code %s in rsync\nStdout:\n%s\nStderr:\n%s",
-                    err.returncode,
-                    err.stdout,
-                    err.stderr,
-                )
-                raise TagFailure("Error getting latest dir")
+            ok, proc = rsync("-l", f"{self.koji_rsync}/{tagdir}/latest", destpath)
+            log_rsync(proc, "Getting 'latest' dir symlink")
+            if not ok:
+                raise TagFailure("Error getting 'latest' dir")
             # we have copied the "latest" symlink as a (now broken) symlink. Read the text of the link to get
             # the directory on the remote side.
             return os.path.basename(os.readlink(destpath))
-
-    @staticmethod
-    def _rsync_with_link(
-        source_url: str,
-        dest_path: t.Union[str, os.PathLike],
-        link_path: t.Union[None, str, os.PathLike],
-        description: str = "rsync",
-    ) -> bool:
-        """
-        rsync from a remote URL sourcepath to the destination destpath, optionally
-        linking to files in linkpath.
-
-        Return True on success, False on failure
-        """
-        args = [
-            "--recursive",
-            "--times",
-            "--delete",
-        ]
-        if link_path and os.path.exists(link_path):
-            args.append(f"--link-path={link_path}")
-        args += [
-            source_url,
-            dest_path,
-        ]
-        try:
-            ret = rsync(*args, check=True)
-            _log.debug(
-                f"{description}: Success.\nStdout:\n%s\nStderr:\n%s",
-                ret.stdout,
-                ret.stderr,
-            )
-        except sp.CalledProcessError as err:
-            _log.error(
-                f"{description}: Return code %s.\nStdout:\n%s\nStderr:\n%s",
-                err.returncode,
-                err.stdout,
-                err.stderr,
-            )
-            return False
-        return True
 
     def _rsync_one_tag(self, source_url, dest_path, link_path):
         """
@@ -303,11 +298,9 @@ class Distrepos:
         the previous repo if they exist
         """
         _log.debug("_rsync_one_tag(%r, %r, %r)", source_url, dest_path, link_path)
-        # XXX rsync source and binaries separately so the rearranging doesn't
-        # screw up the linking
-        if not self._rsync_with_link(
-            source_url, dest_path, link_path, "rsync from koji-hub"
-        ):
+        ok, proc = rsync_with_link(source_url, dest_path, link_path)
+        log_rsync(proc, f"rsync from {source_url} to {dest_path}")
+        if not ok:
             raise TagFailure(f"Error rsyncing {source_url} to {dest_path}")
 
     def _rearrange_rpms(self, working_path: Path, arches: t.List[str]):
@@ -381,9 +374,8 @@ class Distrepos:
                 dst = f"{self.working_root}/{repo.dst}/".replace("%{ARCH}", arch)
                 link = f"{self.dest_root}/{repo.dst}/".replace("%{ARCH}", arch)
                 description = f"rsync from condor repo for {arch}"
-                ok = self._rsync_with_link(
-                    src, dst, link, description=description
-                )
+                ok, proc = rsync_with_link(src, dst, link)
+                log_rsync(proc, description)
                 if not ok:
                     raise TagFailure(f"Error merging condor repos: {description}")
         for repo in source_repos:
@@ -391,9 +383,8 @@ class Distrepos:
             dst = self.working_root / repo.dst
             link = self.dest_root / repo.dst
             description = f"rsync from condor repo for SRPMS"
-            ok = self._rsync_with_link(
-                src, dst, link, description=description
-            )
+            ok, proc = rsync_with_link(src, dst, link)
+            log_rsync(proc, description)
             if not ok:
                 raise TagFailure(f"Error merging condor repos: {description}")
 
@@ -409,7 +400,9 @@ class Distrepos:
         src_packages_dir = src_dir / "Packages"
         try:
             with open(f"{src_pkglist}.new", "wt") as new_pkglist_fh:
-                for dirpath, _, filenames in os.walk(src_packages_dir):  # Path.walk() is not available in Python 3.6
+                for dirpath, _, filenames in os.walk(
+                    src_packages_dir
+                ):  # Path.walk() is not available in Python 3.6
                     for fn in filenames:
                         if not fn.endswith(".src.rpm"):
                             continue
@@ -417,7 +410,9 @@ class Distrepos:
                         print(rpm_path, file=new_pkglist_fh)
             shutil.move(f"{src_pkglist}.new", src_pkglist)
         except OSError as err:
-            raise TagFailure(f"OSError updating pkglist file {src_pkglist}: {err}") from err
+            raise TagFailure(
+                f"OSError updating pkglist file {src_pkglist}: {err}"
+            ) from err
 
         for arch in arches:
             arch_dir = working_path / arch
@@ -427,8 +422,9 @@ class Distrepos:
             arch_debug_pkglist = arch_debug_dir / "pkglist"
             try:
                 arch_debug_dir.mkdir(parents=True, exist_ok=True)
-                with open(f"{arch_pkglist}.new", "wt") as new_pkglist_fh, \
-                    open(f"{arch_debug_pkglist}.new", "wt") as new_debug_pkglist_fh:
+                with open(f"{arch_pkglist}.new", "wt") as new_pkglist_fh, open(
+                    f"{arch_debug_pkglist}.new", "wt"
+                ) as new_debug_pkglist_fh:
 
                     for dirpath, _, filenames in os.walk(arch_packages_dir):
                         for fn in filenames:
@@ -437,16 +433,21 @@ class Distrepos:
                             if "-debuginfo" in fn or "-debugsource" in fn:
                                 # debuginfo/debugsource RPMs go into the debug pkglist and are relative to the debug dir
                                 # which means including a '..'
-                                rpm_path = os.path.join(os.path.relpath(dirpath, arch_debug_dir), fn)
+                                rpm_path = os.path.join(
+                                    os.path.relpath(dirpath, arch_debug_dir), fn
+                                )
                                 print(rpm_path, file=new_debug_pkglist_fh)
                             else:
-                                rpm_path = os.path.join(os.path.relpath(dirpath, arch_dir), fn)
+                                rpm_path = os.path.join(
+                                    os.path.relpath(dirpath, arch_dir), fn
+                                )
                                 print(rpm_path, file=new_pkglist_fh)
                 shutil.move(f"{arch_pkglist}.new", arch_pkglist)
                 shutil.move(f"{arch_debug_pkglist}.new", arch_debug_pkglist)
             except OSError as err:
-                raise TagFailure(f"OSError updating pkglist files {arch_pkglist} and {arch_debug_pkglist}: {err}") from err
-
+                raise TagFailure(
+                    f"OSError updating pkglist files {arch_pkglist} and {arch_debug_pkglist}: {err}"
+                ) from err
 
     def _run_createrepo(self, working_path: Path, arches: t.List[str]):
         raise NotImplementedError()
@@ -464,7 +465,12 @@ class Distrepos:
         Update the published repos by moving the published dir to the 'previous' dir
         and the working dir to the published dir.
         """
-        _log.debug("_update_release_repos(%r, %r, %r)", release_path, working_path, previous_path)
+        _log.debug(
+            "_update_release_repos(%r, %r, %r)",
+            release_path,
+            working_path,
+            previous_path,
+        )
         failmsg = "Error updating release repos at %s" % release_path
         # Sanity check: make sure we have something to move
         if not working_path.exists():
