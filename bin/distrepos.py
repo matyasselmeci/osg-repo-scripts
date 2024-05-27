@@ -702,7 +702,7 @@ def _get_taglist_from_config(config: ConfigParser) -> t.List[Tag]:
 
     # Now process the tag sections.
     for section_name, section in config.items():
-        if not section.lower().startswith("tag "):
+        if not section_name.lower().startswith("tag "):
             continue
 
         tag_name = section_name.split(" ", 1)[1].strip()
