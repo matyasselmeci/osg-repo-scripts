@@ -213,10 +213,16 @@ class Distrepos:
         Run an rsync listing of the rsync root. If this fails, there is no point
         in proceeding further.
         """
-        ok, proc = rsync("--list-only", self.koji_rsync)
+        description = f"koji-hub rsync endpoint {self.koji_rsync} directory listing"
+        timeout = 300
+        try:
+            ok, proc = rsync("--list-only", self.koji_rsync, timeout=timeout)
+        except sp.TimeoutExpired:
+            _log.critical(f"{description} timed out after {timeout} seconds")
+            raise ProgramError(ERR_RSYNC, "rsync from koji-hub timed out, cannot continue")
         log_rsync(
             proc,
-            f"koji-hub rsync endpoint {self.koji_rsync} directory listing",
+            description,
             failure_level=logging.CRITICAL,
         )
         if not ok:
@@ -284,7 +290,10 @@ class Distrepos:
         """
         with tempfile.TemporaryDirectory as tempdir:
             destpath = os.path.join(tempdir.name, "latest")
-            ok, proc = rsync("-l", f"{self.koji_rsync}/{tagdir}/latest", destpath)
+            try:
+                ok, proc = rsync("-l", f"{self.koji_rsync}/{tagdir}/latest", destpath, timeout=180)
+            except sp.TimeoutExpired:
+                raise TagFailure("Timeout getting 'latest' dir")
             log_rsync(proc, "Getting 'latest' dir symlink")
             if not ok:
                 raise TagFailure("Error getting 'latest' dir")
