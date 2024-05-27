@@ -229,7 +229,8 @@ class Distrepos:
     def _get_latest_dir(self, tagdir: str) -> str:
         """
         Resolves the "latest" symlink for the dist-repo on koji-hub by downloading
-        the symlink to a temporary directory and reading it.
+        the symlink to a temporary directory and reading it.  (We don't want to use
+        the "latest" symlink directly since it may change mid-run.)
         """
         with tempfile.TemporaryDirectory as tempdir:
             destpath = os.path.join(tempdir.name, "latest")
