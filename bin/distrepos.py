@@ -130,16 +130,19 @@ def rsync_with_link(
     source_url: str,
     dest_path: t.Union[str, os.PathLike],
     link_path: t.Union[None, str, os.PathLike],
+    recursive=True,
 ) -> t.Tuple[bool, sp.CompletedProcess]:
     """
     rsync from a remote URL sourcepath to the destination destpath, optionally
-    linking to files in linkpath.
+    linking to files in linkpath.  recursive by default but this can be turned
+    off.
     """
     args = [
-        "--recursive",
         "--times",
         "--delete",
     ]
+    if recursive:
+        args.append("--recursive")
     if link_path and os.path.exists(link_path):
         args.append(f"--link-path={link_path}")
     args += [
@@ -383,22 +386,30 @@ class Distrepos:
         rsync binary and source RPMs from condor repos defined for this tag.
         """
         _log.debug("_merge_condor_repos(%r, %r, %r)", arch_repos, source_repos, arches)
+        # Condor SRPMS are in a subdirectory of the arch-specific condor-directory.
+        # We do not do a recursive rsync because we prefer to put the SRPMS elsewhere.
+
         for repo in arch_repos:
             for arch in arches:
                 src = f"{self.condor_rsync}/{repo.src}/".replace("%{ARCH}", arch)
                 dst = f"{self.working_root}/{repo.dst}/".replace("%{ARCH}", arch)
                 link = f"{self.dest_root}/{repo.dst}/".replace("%{ARCH}", arch)
                 description = f"rsync from condor repo for {arch}"
-                ok, proc = rsync_with_link(src, dst, link)
+                ok, proc = rsync_with_link(src, dst, link, recursive=False)
                 log_rsync(proc, description)
                 if not ok:
                     raise TagFailure(f"Error merging condor repos: {description}")
+
         for repo in source_repos:
             src = f"{self.condor_rsync}/{repo.src}/"
-            dst = self.working_root / repo.dst
-            link = self.dest_root / repo.dst
+            dst = f"{self.working_root}/{repo.dst}/"
+            link = f"{self.dest_root}/{repo.dst}/"
+            if arches:
+                src = src.replace("%{ARCH}", arches[0])
+                dst = dst.replace("%{ARCH}", arches[0])
+                link = link.replace("%{ARCH}", arches[0])
             description = f"rsync from condor repo for SRPMS"
-            ok, proc = rsync_with_link(src, dst, link)
+            ok, proc = rsync_with_link(src, dst, link, recursive=False)
             log_rsync(proc, description)
             if not ok:
                 raise TagFailure(f"Error merging condor repos: {description}")
