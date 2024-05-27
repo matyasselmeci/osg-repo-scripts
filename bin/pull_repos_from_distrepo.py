@@ -30,7 +30,7 @@ ERR_EMPTY = 6
 
 
 DEFAULT_CONDOR_RSYNC = "rsync://rsync.cs.wisc.edu/htcondor"
-DEFAULT_KOJI_RSYNC = "rsync://kojihub2000.chtc.wisc.edu::repos-dist"
+DEFAULT_KOJI_RSYNC = "rsync://kojihub2000.chtc.wisc.edu/repos-dist"
 DEFAULT_DESTROOT = "/var/www/repo"
 
 
