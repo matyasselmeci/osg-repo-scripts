@@ -73,6 +73,12 @@ class MissingOptionError(ConfigError):
         )
 
 
+class TagFailure(Exception):
+    """
+    Class for failure for a specific tag.  Not meant to be fatal.
+    """
+
+
 #
 # Data classes
 #
@@ -141,6 +147,7 @@ class Distrepos:
         self.koji_rsync = koji_rsync
         self.condor_rsync = condor_rsync
         self.srpm_compat_symlink = True  # XXX should this be configurable? per tag?
+        self.make_repoview = False  # XXX should be configurable
 
     def check_rsync(self):
         """
@@ -187,34 +194,39 @@ class Distrepos:
         release_path = self.dest_root / tag.dest
         working_path = self.working_root / tag.dest
         previous_path = self.previous_root / tag.dest
-        os.makedirs(working_path, exist_ok=True)
+        try:
+            os.makedirs(working_path, exist_ok=True)
+        except OSError as err:
+            _log.error(
+                "OSError creating working dir %s: %s", working_path, err, exc_info=_debug
+            )
+            return False
         latest_dir = self._get_latest_dir(tag.source)
-        if not latest_dir:
-            _log.error("Couldn't get the latest dir for tag %s", tag.name)
-            return False
         source_url = f"{self.koji_rsync}/{tag.source}/{latest_dir}/"
-        if not self._rsync_one_tag(
-            source_url, dest_path=working_path, link_path=release_path
-        ):
+        try:
+            self._rsync_one_tag(
+                source_url, dest_path=working_path, link_path=release_path
+            )
+            self._rearrange_rpms(working_path, tag.arches)
+            self._merge_condor_repos(
+                tag.condor_arch_repos, tag.condor_source_repos, tag.arches
+            )
+            self._update_pkglist_files(
+                working_path, tag.arches
+            )
+            self._run_createrepo(working_path, tag.arches)
+            self._run_repoview(working_path, tag.arches)
+            self._update_release_repos(
+                release_path=release_path,
+                working_path=working_path,
+                previous_path=previous_path,
+            )
+        except TagFailure as err:
+            _log.error("Tag %s failed: %s", tag.name, err, exc_info=_debug)
             return False
-        if not self._rearrange_rpms(working_path, tag.arches):
-            return False
-        if not self._merge_condor_repos(
-            tag.condor_arch_repos, tag.condor_source_repos, tag.arches
-        ):
-            return False
-        if not self._run_createrepo(working_path, tag.arches):
-            return False
-        if not self._run_repoview(working_path, tag.arches):
-            return False
-        if not self._swap_dirs(
-            release_path=release_path,
-            working_path=working_path,
-            previous_path=previous_path,
-        ):
-            return False
+        return True
 
-    def _get_latest_dir(self, tagdir: str) -> t.Optional[str]:
+    def _get_latest_dir(self, tagdir: str) -> str:
         """
         Resolves the "latest" symlink for the dist-repo on koji-hub by downloading
         the symlink to a temporary directory and reading it.
@@ -238,7 +250,7 @@ class Distrepos:
                     err.stdout,
                     err.stderr,
                 )
-                return None
+                raise TagFailure("Error getting latest dir")
             # we have copied the "latest" symlink as a (now broken) symlink. Read the text of the link to get
             # the directory on the remote side.
             return os.path.basename(os.readlink(destpath))
@@ -284,18 +296,20 @@ class Distrepos:
             return False
         return True
 
-    def _rsync_one_tag(self, source_url, dest_path, link_path) -> bool:
+    def _rsync_one_tag(self, source_url, dest_path, link_path):
         """
         rsync the distrepo from kojihub for one tag, linking to the RPMs in
         the previous repo if they exist
         """
+        _log.debug("_rsync_one_tag(%r, %r, %r)", source_url, dest_path, link_path)
         # XXX rsync source and binaries separately so the rearranging doesn't
         # screw up the linking
-        return self._rsync_with_link(
+        if not self._rsync_with_link(
             source_url, dest_path, link_path, "rsync from koji-hub"
-        )
+        ):
+            raise TagFailure(f"Error rsyncing {source_url} to {dest_path}")
 
-    def _rearrange_rpms(self, working_path: Path, arches: t.List[str]) -> bool:
+    def _rearrange_rpms(self, working_path: Path, arches: t.List[str]):
         """
         Rearrange the rsynced RPMs to go from a distrepo layout to something resembling
         the old mash-created repo layout -- in particular, the repodata dirs need to
@@ -322,6 +336,7 @@ class Distrepos:
         repo -- this is passed to `createrepo` to put the debuginfo and debugsource RPMs into
         separate repositories even though the files are mixed together.
         """
+        _log.debug("_rearrange_rpms(%r, %r)", working_path, arches)
         # First, SRPMs. Move src -> source/SRPMS or create a symlink
         try:
             (working_path / "source").mkdir(parents=True, exist_ok=True)
@@ -333,7 +348,7 @@ class Distrepos:
                 shutil.move(working_path / "src", working_path / "source/SRPMS")
         except OSError as err:
             _log.error("OSError rearranging SRPMs: %s", err, exc_info=_debug)
-            return False
+            raise TagFailure("Error rearranging SRPMs") from err
 
         # Next, binary RPMs.
         for arch in arches:
@@ -347,55 +362,113 @@ class Distrepos:
                     err,
                     exc_info=_debug,
                 )
-                return False
-
-        raise True
+                raise TagFailure("Error rearranging binary RPMs") from err
 
     def _merge_condor_repos(
         self,
         arch_repos: t.List[SrcDst],
         source_repos: t.List[SrcDst],
         arches: t.List[str],
-    ) -> bool:
+    ):
+        """
+        rsync binary and source RPMs from condor repos defined for this tag.
+        """
+        _log.debug("_merge_condor_repos(%r, %r, %r)", arch_repos, source_repos, arches)
         for repo in arch_repos:
             for arch in arches:
                 src = f"{self.condor_rsync}/{repo.src}/".replace("%{ARCH}", arch)
                 dst = f"{self.working_root}/{repo.dst}/".replace("%{ARCH}", arch)
                 link = f"{self.dest_root}/{repo.dst}/".replace("%{ARCH}", arch)
+                description = f"rsync from condor repo for {arch}"
                 ok = self._rsync_with_link(
-                    src, dst, link, description=f"rsync from condor repo for {arch}"
+                    src, dst, link, description=description
                 )
                 if not ok:
-                    return False
+                    raise TagFailure(f"Error merging condor repos: {description}")
         for repo in source_repos:
             src = f"{self.condor_rsync}/{repo.src}/"
             dst = self.working_root / repo.dst
             link = self.dest_root / repo.dst
+            description = f"rsync from condor repo for SRPMS"
             ok = self._rsync_with_link(
-                src, dst, link, description=f"rsync from condor repo for SRPMS"
+                src, dst, link, description=description
             )
             if not ok:
-                return False
-        return True
+                raise TagFailure(f"Error merging condor repos: {description}")
 
-    def _run_createrepo(self, working_path: Path, arches: t.List[str]) -> bool:
+    def _update_pkglist_files(self, working_path: Path, arches: t.List[str]):
+        """
+        Update the "pkglist" files with the relative paths of the RPM files, including
+        files that were pulled from the condor repos.  Put debuginfo files in a separate
+        pkglist.
+        """
+        _log.debug("_update_pkglist_files(%r, %r)", working_path, arches)
+        src_dir = working_path / "src"
+        src_pkglist = src_dir / "pkglist"
+        src_packages_dir = src_dir / "Packages"
+        try:
+            with open(f"{src_pkglist}.new", "wt") as new_pkglist_fh:
+                for dirpath, _, filenames in os.walk(src_packages_dir):  # Path.walk() is not available in Python 3.6
+                    for fn in filenames:
+                        if not fn.endswith(".src.rpm"):
+                            continue
+                        rpm_path = os.path.join(os.path.relpath(dirpath, src_dir), fn)
+                        print(rpm_path, file=new_pkglist_fh)
+            shutil.move(f"{src_pkglist}.new", src_pkglist)
+        except OSError as err:
+            raise TagFailure(f"OSError updating pkglist file {src_pkglist}: {err}") from err
+
+        for arch in arches:
+            arch_dir = working_path / arch
+            arch_pkglist = arch_dir / "pkglist"
+            arch_packages_dir = arch_dir / "Packages"
+            arch_debug_dir = arch_dir / "debug"
+            arch_debug_pkglist = arch_debug_dir / "pkglist"
+            try:
+                arch_debug_dir.mkdir(parents=True, exist_ok=True)
+                with open(f"{arch_pkglist}.new", "wt") as new_pkglist_fh, \
+                    open(f"{arch_debug_pkglist}.new", "wt") as new_debug_pkglist_fh:
+
+                    for dirpath, _, filenames in os.walk(arch_packages_dir):
+                        for fn in filenames:
+                            if not fn.endswith(".rpm"):
+                                continue
+                            if "-debuginfo" in fn or "-debugsource" in fn:
+                                # debuginfo/debugsource RPMs go into the debug pkglist and are relative to the debug dir
+                                # which means including a '..'
+                                rpm_path = os.path.join(os.path.relpath(dirpath, arch_debug_dir), fn)
+                                print(rpm_path, file=new_debug_pkglist_fh)
+                            else:
+                                rpm_path = os.path.join(os.path.relpath(dirpath, arch_dir), fn)
+                                print(rpm_path, file=new_pkglist_fh)
+                shutil.move(f"{arch_pkglist}.new", arch_pkglist)
+                shutil.move(f"{arch_debug_pkglist}.new", arch_debug_pkglist)
+            except OSError as err:
+                raise TagFailure(f"OSError updating pkglist files {arch_pkglist} and {arch_debug_pkglist}: {err}") from err
+
+
+    def _run_createrepo(self, working_path: Path, arches: t.List[str]):
         raise NotImplementedError()
 
-    def _run_repoview(self, working_path: Path, arches: t.List[str]) -> bool:
-        raise NotImplementedError()
+    def _run_repoview(self, working_path: Path, arches: t.List[str]):
+        if self.make_repoview:
+            raise NotImplementedError()
+        _ = working_path
+        _ = arches
 
-    # XXX think of a better name
-    def _swap_dirs(
+    def _update_release_repos(
         self, release_path: Path, working_path: Path, previous_path: Path
-    ) -> bool:
+    ):
         """
         Update the published repos by moving the published dir to the 'previous' dir
         and the working dir to the published dir.
         """
+        _log.debug("_update_release_repos(%r, %r, %r)", release_path, working_path, previous_path)
+        failmsg = "Error updating release repos at %s" % release_path
         # Sanity check: make sure we have something to move
         if not working_path.exists():
             _log.error("Cannot release new dir %s: it does not exist", working_path)
-            return False
+            raise TagFailure(failmsg)
 
         # If we have an old previous path, clear it; also make sure its parents exist.
         if previous_path.exists():
@@ -408,7 +481,7 @@ class Distrepos:
                     err,
                     exc_info=_debug,
                 )
-                return False
+                raise TagFailure(failmsg)
         previous_path.parent.mkdir(parents=True, exist_ok=True)
 
         # If we already have something in the release path, move it to the previous path.
@@ -424,7 +497,7 @@ class Distrepos:
                     err,
                     exc_info=_debug,
                 )
-                return False
+                raise TagFailure(failmsg)
         release_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Now move the newly created repo to the release path.
@@ -450,7 +523,7 @@ class Distrepos:
                         err2,
                         exc_info=_debug,
                     )
-            return False
+            raise TagFailure(failmsg)
 
 
 #
