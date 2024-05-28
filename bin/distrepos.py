@@ -396,7 +396,7 @@ class Distrepos:
         """
         rsync binary and source RPMs from condor repos defined for this tag.
         """
-        _log.debug("_pull_condor_repos(%r)", tag)
+        _log.debug("_pull_condor_repos(%r)", tag.name)
         # Condor SRPMS are in a subdirectory of the arch-specific condor-directory.
         # We do not do a recursive rsync because we prefer to put the SRPMS elsewhere.
 
@@ -443,7 +443,7 @@ class Distrepos:
                 # First, pull the main (binary) RPMs
                 description = f"rsync from condor repo for {arch} RPMs"
                 ok, proc = rsync_with_link(
-                    arch_rpms_src,
+                    arch_rpms_src + "*.rpm",
                     arch_rpms_dst,
                     arch_rpms_link,
                     delete=False,
@@ -456,7 +456,7 @@ class Distrepos:
                 # Next pull the debuginfo RPMs.  These may not exist.
                 description = f"rsync from condor repo for {arch} debug RPMs"
                 _, proc = rsync_with_link(
-                    debug_rpms_src,
+                    debug_rpms_src + "*.rpm",
                     debug_rpms_dst,
                     debug_rpms_link,
                     delete=False,
@@ -471,7 +471,7 @@ class Distrepos:
                 if idx == 0:
                     description = f"rsync from condor repo for source RPMs"
                     ok, proc = rsync_with_link(
-                        source_rpms_src,
+                        source_rpms_src + "*.rpm",
                         source_rpms_dst,
                         source_rpms_link,
                         delete=False,
