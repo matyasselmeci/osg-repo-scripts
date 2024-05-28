@@ -194,7 +194,7 @@ def rsync_with_link(
         # rsync --delete errors out if neither --recursive nor --dirs are specified
         args.append("--dirs")
     if link_path and os.path.exists(link_path):
-        args.append(f"--link-path={link_path}")
+        args.append(f"--link-dest={link_path}")
     args += [
         source_url,
         dest_path,
