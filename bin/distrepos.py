@@ -903,9 +903,7 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
 
     def sub_el(a_string):
         """Substitute the value of `dver` for $EL"""
-        # We don't want to use string.Template() here because it turns '$$' into '$'
-        # which we don't want right now.
-        return re.sub(r"[$]{1,2}[{]?EL[}]?", dver, a_string)
+        return string.Template(a_string).safe_substitute({"EL": dver})
 
     # Loop over the dvers, expand into tag sections
     for dver in tagset_section["dvers"].split():
@@ -930,9 +928,11 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
                 value = tagset_section.get(key, raw=False)
             except configparser.InterpolationError:
                 value = tagset_section.get(key, raw=True)
-            new_value = sub_el(value).replace("$", "$$")
+            new_value = sub_el(value)
             # _log.debug("Setting {%s:%s} to %r", tag_section_name, key, new_value)
-            config[tag_section_name][key] = new_value
+            config[tag_section_name][key] = new_value.replace("$", "$$")
+            # ^^ escaping the $'s again because we're doing another round of
+            # interpolation when we read the 'tag' sections created from this
 
 
 def _get_taglist_from_config(
