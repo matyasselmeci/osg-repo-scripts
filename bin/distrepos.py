@@ -629,13 +629,14 @@ class Distrepos:
         """
         Create a symlink from
             <repo>/source/SRPMS (mash layout) -> <repo>/src (distrepo layout)
+        (this needs to be a relative symlink because we're moving directories around)
         """
         _log.debug("_create_compat_symlink(%r)", working_path)
         try:
             (working_path / "source").mkdir(parents=True, exist_ok=True)
             if (working_path / "source/SRPMS").exists():
                 shutil.rmtree(working_path / "source/SRPMS")
-            os.symlink(working_path / "src", working_path / "source/SRPMS")
+            os.symlink("../src", working_path / "source/SRPMS")
         except OSError as err:
             raise TagFailure("Error creating SRPM compat symlink") from err
 
