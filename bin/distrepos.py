@@ -97,6 +97,9 @@ class SrcDst(t.NamedTuple):
     src: str
     dst: str
 
+    def __str__(self):
+        return f"{self.src} -> {self.dst}"
+
 
 class Tag(t.NamedTuple):
     name: str
@@ -108,6 +111,20 @@ class Tag(t.NamedTuple):
     debug_rpms_dest: str
     source_rpms_dest: str
 
+    def __str__(self):
+        arches_str = " ".join(self.arches)
+        joiner = "\n" + 19 * " "
+        condor_repos_str = joiner.join(str(it) for it in self.condor_repos)
+        return f"""\
+Tag {self.name}
+source           : {self.source}
+dest             : {self.dest}
+arches           : {arches_str}
+condor_repos     : {condor_repos_str}
+arch_rpms_dest   : {self.arch_rpms_dest}
+debug_rpms_dest  : {self.debug_rpms_dest}
+source_rpms_dest : {self.source_rpms_dest}
+"""
 
 #
 # Wrappers around process handling and logging
@@ -817,6 +834,11 @@ def get_args(argv: t.List[str]) -> Namespace:
         default=[],
         help="Tag to pull. Default is all the tags in the config. Can be specified multiple times.",
     )
+    parser.add_argument(
+        "--print-tags",
+        action="store_true",
+        help="Don't run, just print the parsed tag definitions to stdout.",
+    )
     args = parser.parse_args(argv[1:])
     return args
 
@@ -1020,6 +1042,10 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
 
     setup_logging(args, config)
     dr = parse_config(args, config)
+
+    if args.print_tags:
+        print("------".join(str(it) for it in dr.taglist))
+        return 0
 
     _log.info("Program started")
     dr.check_rsync()
