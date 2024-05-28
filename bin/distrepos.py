@@ -312,6 +312,40 @@ def log_rsync(
     )
 
 
+def check_rsync(koji_rsync: str):
+    """
+    Run an rsync listing of the rsync root. If this fails, there is no point
+    in proceeding further.
+    """
+    description = f"koji-hub rsync endpoint {koji_rsync} directory listing"
+    try:
+        ok, proc = rsync("--list-only", koji_rsync, timeout=180)
+    except sp.TimeoutExpired:
+        _log.critical(f"{description} timed out")
+        raise ProgramError(
+            ERR_RSYNC, "rsync dir listing from koji-hub timed out, cannot continue"
+        )
+    log_rsync(
+        proc,
+        description,
+        failure_level=logging.CRITICAL,
+    )
+    if not ok:
+        raise ProgramError(
+            ERR_RSYNC, "rsync dir listing from koji-hub failed, cannot continue"
+        )
+
+
+class Options(t.NamedTuple):
+    # TODO docstring
+    dest_root: Path
+    working_root: Path
+    previous_root: Path
+    koji_rsync: str
+    condor_rsync: str
+    make_repoview: bool = False
+
+
 #
 # Main Distrepos class
 #
@@ -345,45 +379,11 @@ class Distrepos:
 
     def __init__(
         self,
-        dest_root: t.Union[os.PathLike, str],
-        working_root: t.Union[os.PathLike, str],
-        previous_root: t.Union[os.PathLike, str],
-        koji_rsync: str,
-        condor_rsync: str,
+        options: Options,
         taglist: t.List[Tag],
     ):
         self.taglist = taglist
-        self.dest_root = Path(dest_root)
-        self.working_root = Path(working_root)
-        self.previous_root = Path(previous_root)
-
-        self.koji_rsync = koji_rsync
-        self.condor_rsync = condor_rsync
-        self.srpm_compat_symlink = True  # XXX should this be configurable? per tag?
-        self.make_repoview = False  # XXX should be configurable
-
-    def check_rsync(self):
-        """
-        Run an rsync listing of the rsync root. If this fails, there is no point
-        in proceeding further.
-        """
-        description = f"koji-hub rsync endpoint {self.koji_rsync} directory listing"
-        try:
-            ok, proc = rsync("--list-only", self.koji_rsync, timeout=180)
-        except sp.TimeoutExpired:
-            _log.critical(f"{description} timed out")
-            raise ProgramError(
-                ERR_RSYNC, "rsync dir listing from koji-hub timed out, cannot continue"
-            )
-        log_rsync(
-            proc,
-            description,
-            failure_level=logging.CRITICAL,
-        )
-        if not ok:
-            raise ProgramError(
-                ERR_RSYNC, "rsync dir listing from koji-hub failed, cannot continue"
-            )
+        self.options = options
 
     def run(self) -> t.Tuple[t.List[Tag], t.List[Tag]]:
         """
@@ -392,20 +392,20 @@ class Distrepos:
         successful = []
         failed = []
         for tag in self.taglist:
-            if self.run_one_tag(tag):
+            if self.run_one_tag(self.options, tag):
                 successful.append(tag)
             else:
                 failed.append(tag)
         return successful, failed
 
-    def run_one_tag(self, tag: Tag) -> bool:
+    def run_one_tag(self, options: Options, tag: Tag) -> bool:
         """
         Run all the actions necessary to create a repo for one tag in the config.
         Return True on success or False on failure.
         """
-        release_path = self.dest_root / tag.dest
-        working_path = self.working_root / tag.dest
-        previous_path = self.previous_root / tag.dest
+        release_path = options.dest_root / tag.dest
+        working_path = options.working_root / tag.dest
+        previous_path = options.previous_root / tag.dest
         try:
             os.makedirs(working_path, exist_ok=True)
         except OSError as err:
@@ -416,16 +416,17 @@ class Distrepos:
                 exc_info=_debug,
             )
             return False
-        latest_dir = self._get_latest_dir(tag.source)
-        source_url = f"{self.koji_rsync}/{tag.source}/{latest_dir}/"
+        latest_dir = self._get_latest_dir(options.koji_rsync, tag.source)
+        source_url = f"{options.koji_rsync}/{tag.source}/{latest_dir}/"
         try:
             self._rsync_one_tag(
                 source_url=source_url, dest_path=working_path, link_path=release_path
             )
-            self._pull_condor_repos(tag)
+            self._pull_condor_repos(options, tag)
             self._update_pkglist_files(working_path, tag.arches)
             self._run_createrepo(working_path, tag.arches)
-            self._run_repoview(working_path, tag.arches)
+            if options.make_repoview:
+                self._run_repoview(working_path, tag.arches)
             self._create_compat_symlink(working_path)
             self._update_release_repos(
                 release_path=release_path,
@@ -437,7 +438,8 @@ class Distrepos:
             return False
         return True
 
-    def _get_latest_dir(self, tagdir: str) -> str:
+    @staticmethod
+    def _get_latest_dir(koji_rsync: str, tagdir: str) -> str:
         """
         Resolves the "latest" symlink for the dist-repo on koji-hub by downloading
         the symlink to a temporary directory and reading it.  (We don't want to use
@@ -447,7 +449,7 @@ class Distrepos:
             destpath = os.path.join(tempdir, "latest")
             try:
                 ok, proc = rsync(
-                    "-l", f"{self.koji_rsync}/{tagdir}/latest", destpath, timeout=180
+                    "-l", f"{koji_rsync}/{tagdir}/latest", destpath, timeout=180
                 )
             except sp.TimeoutExpired:
                 raise TagFailure("Timeout getting 'latest' dir")
@@ -472,11 +474,17 @@ class Distrepos:
             raise TagFailure(f"Error with {description}")
         _log.info("%s ok", description)
 
-    def _pull_condor_repos(self, tag: Tag):
+    @staticmethod
+    def _pull_condor_repos(options: Options, tag: Tag):
         """
         rsync binary and source RPMs from condor repos defined for this tag.
         """
         _log.debug("_pull_condor_repos(%r)", tag.name)
+
+        condor_rsync = options.condor_rsync
+        working_root = options.working_root
+        dest_root = options.dest_root
+
         # Condor SRPMS are in a subdirectory of the arch-specific condor-directory.
         # We do not do a recursive rsync because we prefer to put the SRPMS elsewhere.
 
@@ -488,28 +496,28 @@ class Distrepos:
 
         for idx, arch in enumerate(tag.arches):
             for repo in tag.condor_repos:
-                arch_rpms_src = sub_arch(f"{self.condor_rsync}/{repo.src}/")
+                arch_rpms_src = sub_arch(f"{condor_rsync}/{repo.src}/")
                 debug_rpms_src = arch_rpms_src + "debug/"
                 source_rpms_src = arch_rpms_src + "SRPMS/"
 
                 arch_rpms_dst = sub_arch(
-                    f"{self.working_root}/{tag.arch_rpms_dest}/{repo.dst}/"
+                    f"{working_root}/{tag.arch_rpms_dest}/{repo.dst}/"
                 )
                 debug_rpms_dst = sub_arch(
-                    f"{self.working_root}/{tag.debug_rpms_dest}/{repo.dst}/"
+                    f"{working_root}/{tag.debug_rpms_dest}/{repo.dst}/"
                 )
                 source_rpms_dst = sub_arch(
-                    f"{self.working_root}/{tag.source_rpms_dest}/{repo.dst}/"
+                    f"{working_root}/{tag.source_rpms_dest}/{repo.dst}/"
                 )
 
                 arch_rpms_link = sub_arch(
-                    f"{self.dest_root}/{tag.arch_rpms_dest}/{repo.dst}/"
+                    f"{dest_root}/{tag.arch_rpms_dest}/{repo.dst}/"
                 )
                 debug_rpms_link = sub_arch(
-                    f"{self.dest_root}/{tag.debug_rpms_dest}/{repo.dst}/"
+                    f"{dest_root}/{tag.debug_rpms_dest}/{repo.dst}/"
                 )
                 source_rpms_link = sub_arch(
-                    f"{self.dest_root}/{tag.source_rpms_dest}/{repo.dst}/"
+                    f"{dest_root}/{tag.source_rpms_dest}/{repo.dst}/"
                 )
 
                 # First, pull the main (binary) RPMs
@@ -559,7 +567,8 @@ class Distrepos:
                     else:
                         raise TagFailure(f"Error pulling condor repos: {description}")
 
-    def _update_pkglist_files(self, working_path: Path, arches: t.List[str]):
+    @staticmethod
+    def _update_pkglist_files(working_path: Path, arches: t.List[str]):
         """
         Update the "pkglist" files with the relative paths of the RPM files, including
         files that were pulled from the condor repos.  Put debuginfo files in a separate
@@ -637,7 +646,8 @@ class Distrepos:
                     f"OSError updating pkglist files {arch_pkglist} and {arch_debug_pkglist}: {err}"
                 ) from err
 
-    def _run_createrepo(self, working_path: Path, arches: t.List[str]):
+    @staticmethod
+    def _run_createrepo(working_path: Path, arches: t.List[str]):
         _log.debug("_run_createrepo(%r, %r)", working_path, arches)
 
         # SRPMS
@@ -679,12 +689,13 @@ class Distrepos:
             else:
                 raise TagFailure(f"Error {description}")
 
-    def _run_repoview(self, working_path: Path, arches: t.List[str]):
+    @staticmethod
+    def _run_repoview(working_path: Path, arches: t.List[str]):
         _log.debug("_run_repoview(%r, %r)", working_path, arches)
-        if self.make_repoview:
-            raise NotImplementedError()
+        raise NotImplementedError()
 
-    def _create_compat_symlink(self, working_path: Path):
+    @staticmethod
+    def _create_compat_symlink(working_path: Path):
         """
         Create a symlink from
             <repo>/source/SRPMS (mash layout) -> <repo>/src (distrepo layout)
@@ -701,8 +712,9 @@ class Distrepos:
             raise TagFailure(f"Error {description}") from err
         _log.info("%s ok", description)
 
+    @staticmethod
     def _update_release_repos(
-        self, release_path: Path, working_path: Path, previous_path: Path
+        release_path: Path, working_path: Path, previous_path: Path
     ):
         """
         Update the published repos by moving the published dir to the 'previous' dir
@@ -1000,7 +1012,7 @@ def _get_taglist_from_config(
     return taglist
 
 
-def parse_config(args: Namespace, config: ConfigParser) -> Distrepos:
+def parse_config(args: Namespace, config: ConfigParser) -> t.Tuple[Options, t.List[Tag]]:
     """
     Parse the config file and return the Distrepos object from the parameters.
     Apply any overrides from the command-line.
@@ -1020,14 +1032,13 @@ def parse_config(args: Namespace, config: ConfigParser) -> Distrepos:
         dest_root = options_section.get("dest_root", DEFAULT_DESTROOT).rstrip("/")
         working_root = options_section.get("working_root", dest_root + ".working")
         previous_root = options_section.get("previous_root", dest_root + ".previous")
-    return Distrepos(
-        dest_root=dest_root,
-        working_root=working_root,
-        previous_root=previous_root,
+    return Options(
+        dest_root=Path(dest_root),
+        working_root=Path(working_root),
+        previous_root=Path(previous_root),
         condor_rsync=options_section.get("condor_rsync", DEFAULT_CONDOR_RSYNC),
         koji_rsync=options_section.get("koji_rsync", DEFAULT_KOJI_RSYNC),
-        taglist=taglist,
-    )
+    ), taglist
 
 
 #
@@ -1059,22 +1070,23 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
             _debug = False
 
     setup_logging(args, config)
-    dr = parse_config(args, config)
+    options, taglist = parse_config(args, config)
 
     if args.print_tags:
-        for tag in dr.taglist:
+        for tag in taglist:
             print_tag(
                 tag,
-                koji_rsync=dr.koji_rsync,
-                condor_rsync=dr.condor_rsync,
-                destroot=dr.dest_root,
+                koji_rsync=options.koji_rsync,
+                condor_rsync=options.condor_rsync,
+                destroot=options.dest_root,
             )
             print("------")
         return 0
 
     _log.info("Program started")
-    dr.check_rsync()
-    _log.info("rsync check successful. Starting run for %d tags", len(dr.taglist))
+    check_rsync(options.koji_rsync)
+    _log.info("rsync check successful. Starting run for %d tags", len(taglist))
+    dr = Distrepos(options, taglist)
     successful, failed = dr.run()
     _log.info("Run completed")
 
