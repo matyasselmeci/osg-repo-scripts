@@ -916,12 +916,13 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
             # )
         except configparser.DuplicateSectionError:
             pass
-        for key, value in tagset_section.items():
+        for key in tagset_section:
             if key == "dvers":
                 continue
             # Do not overwrite existing options
             if key in config[tag_section_name]:
                 continue
+            value = tagset_section.get(key, raw=True)
             new_value = sub_el(value)
             # _log.debug("Setting {%s:%s} to %r", tag_section_name, key, new_value)
             config[tag_section_name][key] = new_value
