@@ -6,15 +6,16 @@ definition files.  The list of repositories is pulled from a config file.
 """
 
 import configparser
-import tempfile
 from configparser import ConfigParser, ExtendedInterpolation
 import logging
 import logging.handlers
 import os
 import re
 import shutil
+import string
 import subprocess as sp
 import sys
+import tempfile
 import typing as t
 from argparse import ArgumentParser, Namespace
 from pathlib import Path
@@ -452,44 +453,36 @@ class Distrepos:
         # Condor SRPMS are in a subdirectory of the arch-specific condor-directory.
         # We do not do a recursive rsync because we prefer to put the SRPMS elsewhere.
 
+        def sub_arch(a_string):
+            """
+            Substitute the current `arch` for `$ARCH` in a string
+            """
+            return string.Template(a_string).safe_substitute({"ARCH": arch})
+
         for idx, arch in enumerate(tag.arches):
             for repo in tag.condor_repos:
-                arch_rpms_src = f"{self.condor_rsync}/{repo.src}/".replace(
-                    "%{ARCH}", arch
-                )
+                arch_rpms_src = sub_arch(f"{self.condor_rsync}/{repo.src}/")
                 debug_rpms_src = arch_rpms_src + "debug/"
                 source_rpms_src = arch_rpms_src + "SRPMS/"
 
-                arch_rpms_dst = (
-                    f"{self.working_root}/{tag.arch_rpms_dest}/{repo.dst}/".replace(
-                        "%{ARCH}", arch
-                    )
+                arch_rpms_dst = sub_arch(
+                    f"{self.working_root}/{tag.arch_rpms_dest}/{repo.dst}/"
                 )
-                debug_rpms_dst = (
-                    f"{self.working_root}/{tag.debug_rpms_dest}/{repo.dst}/".replace(
-                        "%{ARCH}", arch
-                    )
+                debug_rpms_dst = sub_arch(
+                    f"{self.working_root}/{tag.debug_rpms_dest}/{repo.dst}/"
                 )
-                source_rpms_dst = (
-                    f"{self.working_root}/{tag.source_rpms_dest}/{repo.dst}/".replace(
-                        "%{ARCH}", arch
-                    )
+                source_rpms_dst = sub_arch(
+                    f"{self.working_root}/{tag.source_rpms_dest}/{repo.dst}/"
                 )
 
-                arch_rpms_link = (
-                    f"{self.dest_root}/{tag.arch_rpms_dest}/{repo.dst}/".replace(
-                        "%{ARCH}", arch
-                    )
+                arch_rpms_link = sub_arch(
+                    f"{self.dest_root}/{tag.arch_rpms_dest}/{repo.dst}/"
                 )
-                debug_rpms_link = (
-                    f"{self.dest_root}/{tag.debug_rpms_dest}/{repo.dst}/".replace(
-                        "%{ARCH}", arch
-                    )
+                debug_rpms_link = sub_arch(
+                    f"{self.dest_root}/{tag.debug_rpms_dest}/{repo.dst}/"
                 )
-                source_rpms_link = (
-                    f"{self.dest_root}/{tag.source_rpms_dest}/{repo.dst}/".replace(
-                        "%{ARCH}", arch
-                    )
+                source_rpms_link = sub_arch(
+                    f"{self.dest_root}/{tag.source_rpms_dest}/{repo.dst}/"
                 )
 
                 # First, pull the main (binary) RPMs
@@ -864,12 +857,12 @@ def setup_logging(args: Namespace, config: ConfigParser) -> None:
 def _expand_tagset(config: ConfigParser, tagset_section_name: str):
     """
     Expand a 'tagset' section into multiple 'tag' sections, substituting each
-    value of the tagset's 'dvers' option into "%{EL}".
+    value of the tagset's 'dvers' option into "$${EL}".
     Modifies 'config' in-place.
     """
-    if "%{EL}" not in tagset_section_name:
+    if "${EL}" not in tagset_section_name and "$EL" not in tagset_section_name:
         raise ConfigError(
-            f"Section name [{tagset_section_name}] does not contain '%{{EL}}'"
+            f"Section name [{tagset_section_name}] does not contain '${{EL}}'"
         )
     tagset_section = config[tagset_section_name]
     tagset_name = tagset_section_name.split(" ", 1)[1].strip()
@@ -884,9 +877,15 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
         if not tagset_section.get(opt):
             raise MissingOptionError(tagset_section_name, opt)
 
+    def sub_el(a_string):
+        """Substitute the value of `dver` for $EL"""
+        return string.Template(a_string).safe_substitute({"EL": dver})
+
     # Loop over the dvers, expand into tag sections
     for dver in tagset_section["dvers"].split():
-        tag_name = tagset_name.replace("%{EL}", dver)
+        tag_name = sub_el(
+            tagset_name.replace("$$", "$")  # ConfigParser does not interpolate in section names
+        )
         tag_section_name = f"tag {tag_name}"
         try:
             config.add_section(tag_section_name)
@@ -901,7 +900,7 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
             # Do not overwrite existing options
             if key in config[tag_section_name]:
                 continue
-            new_value = value.replace("%{EL}", dver)
+            new_value = sub_el(value)
             # _log.debug("Setting {%s:%s} to %r", tag_section_name, key, new_value)
             config[tag_section_name][key] = new_value
 
