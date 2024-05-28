@@ -207,22 +207,26 @@ def log_rsync(
     """
     not_found = proc.returncode == RSYNC_NOT_FOUND
     ok = proc.returncode == RSYNC_OK
-    stdout = "\n".join(ellipsize_lines(proc.stdout, 24))
-    stderr = "\n".join(ellipsize_lines(proc.stderr, 40))
-    outerr = f"Stdout:\n{stdout}\n\nStderr:\n{stderr}\n------"
+    outerr = []
+    if proc.stdout:
+        outerr += ["-----", "Stdout:"] + ellipsize_lines(proc.stdout, 24)
+    if proc.stderr:
+        outerr += ["-----", "Stderr:"] + ellipsize_lines(proc.stderr, 40)
+    outerr += ["-----"]
+    outerr_s = "\n".join(outerr)
     if ok:
         _log.log(
             success_level,
             "%s succeeded\n%s",
             description,
-            outerr,
+            outerr_s,
         )
     elif not_found and not_found_is_ok:
         _log.log(
             success_level,
             "%s did not find source\n%s",
             description,
-            outerr,
+            outerr_s,
         )
     else:
         _log.log(
@@ -230,7 +234,7 @@ def log_rsync(
             "%s failed with exit code %d\n%s",
             description,
             proc.returncode,
-            outerr,
+            outerr_s,
         )
 
 
@@ -557,13 +561,13 @@ class Distrepos:
                 ) from err
 
     def _run_createrepo(self, working_path: Path, arches: t.List[str]):
+        _log.debug("_run_createrepo(%r, %r)", working_path, arches)
         raise NotImplementedError()
 
     def _run_repoview(self, working_path: Path, arches: t.List[str]):
+        _log.debug("_run_repoview(%r, %r)", working_path, arches)
         if self.make_repoview:
             raise NotImplementedError()
-        _ = working_path
-        _ = arches
 
     def _create_compat_symlink(self, working_path: Path):
         """
@@ -737,7 +741,7 @@ def setup_logging(args: Namespace, config: ConfigParser) -> None:
     if sys.stderr.isatty():
         ch = logging.StreamHandler()
         ch.setLevel(loglevel)
-        chformatter = logging.Formatter("%(message)s")
+        chformatter = logging.Formatter(">>>\t%(message)s")
         ch.setFormatter(chformatter)
         _log.addHandler(ch)
     if args.logfile:
