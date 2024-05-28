@@ -111,22 +111,30 @@ class Tag(t.NamedTuple):
     debug_rpms_dest: str
     source_rpms_dest: str
 
+
 def print_tag(tag: Tag, koji_rsync: str, condor_rsync: str, destroot: str):
     arches_str = " ".join(tag.arches)
-    print(f"""\
+    print(
+        f"""\
 Tag {tag.name}
 source           : {koji_rsync}/{tag.source}
 dest             : {destroot}/{tag.dest}
 arches           : {arches_str}
 arch_rpms_dest   : {destroot}/{tag.arch_rpms_dest}
 debug_rpms_dest  : {destroot}/{tag.debug_rpms_dest}
-source_rpms_dest : {destroot}/{tag.source_rpms_dest}""")
+source_rpms_dest : {destroot}/{tag.source_rpms_dest}"""
+    )
     if tag.condor_repos:
         joiner = "\n" + 19 * " " + f"{condor_rsync}/"
-        condor_repos_str = f"{condor_rsync}/" + joiner.join(str(it) for it in tag.condor_repos)
-        print(f"""\
+        condor_repos_str = f"{condor_rsync}/" + joiner.join(
+            str(it) for it in tag.condor_repos
+        )
+        print(
+            f"""\
 condor_repos     : {condor_repos_str}
-""")
+"""
+        )
+
 
 #
 # Wrappers around process handling and logging
@@ -908,7 +916,9 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
     # Loop over the dvers, expand into tag sections
     for dver in tagset_section["dvers"].split():
         tag_name = sub_el(
-            tagset_name.replace("$$", "$")  # ConfigParser does not interpolate in section names
+            tagset_name.replace(
+                "$$", "$"
+            )  # ConfigParser does not interpolate in section names
         )
         tag_section_name = f"tag {tag_name}"
         try:
@@ -1053,7 +1063,12 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
 
     if args.print_tags:
         for tag in dr.taglist:
-            print_tag(tag, koji_rsync=dr.koji_rsync, condor_rsync=dr.condor_rsync, destroot=dr.dest_root)
+            print_tag(
+                tag,
+                koji_rsync=dr.koji_rsync,
+                condor_rsync=dr.condor_rsync,
+                destroot=dr.dest_root,
+            )
             print("------")
         return 0
 
