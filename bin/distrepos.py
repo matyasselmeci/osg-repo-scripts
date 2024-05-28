@@ -1056,9 +1056,19 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
     successful = []
     failed = []
     for tag in taglist:
+        _log.info("Starting tag %s", tag.name)
+        if sys.stdout.isatty():
+            print_tag(
+                tag,
+                koji_rsync=options.koji_rsync,
+                condor_rsync=options.condor_rsync,
+                destroot=options.dest_root,
+            )
         if run_one_tag(options, tag):
+            _log.info("Tag %s completed", tag.name)
             successful.append(tag)
         else:
+            _log.error("Tag %s failed", tag.name)
             failed.append(tag)
 
     _log.info("Run completed")
