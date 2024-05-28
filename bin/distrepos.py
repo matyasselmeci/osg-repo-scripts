@@ -437,10 +437,12 @@ class Distrepos:
         the previous repo if they exist
         """
         _log.debug("_rsync_one_tag(%r, %r, %r)", source_url, dest_path, link_path)
+        description = f"rsync from {source_url} to {dest_path}"
         ok, proc = rsync_with_link(source_url, dest_path, link_path)
-        log_rsync(proc, f"rsync from {source_url} to {dest_path}")
+        log_rsync(proc, description)
         if not ok:
-            raise TagFailure(f"Error rsyncing {source_url} to {dest_path}")
+            raise TagFailure(f"Error with {description}")
+        _log.info("%s ok", description)
 
     def _pull_condor_repos(self, tag: Tag):
         """
@@ -500,7 +502,9 @@ class Distrepos:
                     recursive=False,
                 )
                 log_rsync(proc, description)
-                if not ok:
+                if ok:
+                    _log.info("%s ok", description)
+                else:
                     raise TagFailure(f"Error pulling condor repos: {description}")
 
                 # Next pull the debuginfo RPMs.  These may not exist.
@@ -515,6 +519,8 @@ class Distrepos:
                 log_rsync(proc, description, not_found_is_ok=True)
                 if proc.returncode not in {RSYNC_OK, RSYNC_NOT_FOUND}:
                     raise TagFailure(f"Error pulling condor repos: {description}")
+                else:
+                    _log.info("%s ok", description)
 
                 # Finally pull the SRPMs -- these are identical between arches so only
                 # pull if we're on the first arch.
@@ -528,7 +534,9 @@ class Distrepos:
                         recursive=False,
                     )
                     log_rsync(proc, description)
-                    if not ok:
+                    if ok:
+                        _log.info("%s ok", description)
+                    else:
                         raise TagFailure(f"Error pulling condor repos: {description}")
 
     def _update_pkglist_files(self, working_path: Path, arches: t.List[str]):
@@ -557,6 +565,7 @@ class Distrepos:
 
             # New file written; move it into place, overwriting the old one.
             shutil.move(f"{src_pkglist}.new", src_pkglist)
+            _log.info("Updating %s ok", src_pkglist)
         except OSError as err:
             raise TagFailure(
                 f"OSError updating pkglist file {src_pkglist}: {err}"
@@ -600,7 +609,9 @@ class Distrepos:
 
                 # New files written; move them into place, overwriting old ones.
                 shutil.move(f"{arch_pkglist}.new", arch_pkglist)
+                _log.info("Updating %s ok", arch_pkglist)
                 shutil.move(f"{arch_debug_pkglist}.new", arch_debug_pkglist)
+                _log.info("Updating %s ok", arch_debug_pkglist)
             except OSError as err:
                 raise TagFailure(
                     f"OSError updating pkglist files {arch_pkglist} and {arch_debug_pkglist}: {err}"
@@ -616,8 +627,11 @@ class Distrepos:
         ok, proc = run_with_log(
             ["createrepo_c", str(src_dir), f"--pkglist={src_pkglist}"]
         )
-        if not ok:
-            raise TagFailure("Error running createrepo on srpms")
+        description = "running createrepo on SRPMs"
+        if ok:
+            _log.info("%s ok", description)
+        else:
+            raise TagFailure(f"Error {description}")
 
         # arch-specific packages and debug repos
         for arch in arches:
@@ -626,8 +640,11 @@ class Distrepos:
             ok, proc = run_with_log(
                 ["createrepo_c", str(arch_dir), f"--pkglist={arch_pkglist}"]
             )
-            if not ok:
-                raise TagFailure(f"Error running createrepo on {arch} rpms")
+            description = f"running createrepo on {arch} rpms"
+            if ok:
+                _log.info("%s ok", description)
+            else:
+                raise TagFailure(f"Error {description}")
 
             arch_debug_dir = arch_dir / "debug"
             arch_debug_pkglist = arch_debug_dir / "pkglist"
@@ -636,8 +653,11 @@ class Distrepos:
             ok, proc = run_with_log(
                 ["createrepo_c", str(arch_debug_dir), f"--pkglist={arch_debug_pkglist}"]
             )
-            if not ok:
-                raise TagFailure(f"Error running createrepo on {arch} debuginfo rpms")
+            description = f"running createrepo on {arch} debuginfo rpms"
+            if ok:
+                _log.info("%s ok", description)
+            else:
+                raise TagFailure(f"Error {description}")
 
     def _run_repoview(self, working_path: Path, arches: t.List[str]):
         _log.debug("_run_repoview(%r, %r)", working_path, arches)
@@ -651,13 +671,15 @@ class Distrepos:
         (this needs to be a relative symlink because we're moving directories around)
         """
         _log.debug("_create_compat_symlink(%r)", working_path)
+        description = "creating SRPM compat symlink"
         try:
             (working_path / "source").mkdir(parents=True, exist_ok=True)
             if (working_path / "source/SRPMS").exists():
                 shutil.rmtree(working_path / "source/SRPMS")
             os.symlink("../src", working_path / "source/SRPMS")
         except OSError as err:
-            raise TagFailure("Error creating SRPM compat symlink") from err
+            raise TagFailure(f"Error {description}") from err
+        _log.info("%s ok", description)
 
     def _update_release_repos(
         self, release_path: Path, working_path: Path, previous_path: Path
@@ -732,6 +754,7 @@ class Distrepos:
                         exc_info=_debug,
                     )
             raise TagFailure(failmsg)
+        _log.info("Successfully released %s", release_path)
 
 
 #
