@@ -133,14 +133,41 @@ def rsync(*args, **kwargs) -> t.Tuple[bool, sp.CompletedProcess]:
     return proc.returncode == 0, proc
 
 
-def rsync_exists(remote_url: str) -> bool:
-    ok, proc = rsync(["--list-only", remote_url])
-    if proc.returncode == 0:
-        return True
-    elif proc.returncode == 23:
-        return False
-    else:
-        pass  # XXX now what?
+def run_with_log(
+    *args,
+    ok_exit: t.Union[int, t.Container[int]] = 0,
+    success_level=logging.DEBUG,
+    failure_level=logging.ERROR,
+    stdout_max_lines=24,
+    stderr_max_lines=40,
+    **kwargs,
+) -> t.Tuple[bool, sp.CompletedProcess]:
+    if isinstance(ok_exit, int):
+        ok_exit = [ok_exit]
+    kwargs.setdefault("stdout", sp.PIPE)
+    kwargs.setdefault("stderr", sp.PIPE)
+    kwargs.setdefault("encoding", "latin-1")
+    if _debug:
+        _log.debug("running %r %r", args, kwargs)
+    proc = sp.run(*args, **kwargs)
+    ok = proc.returncode in ok_exit
+    level = success_level if ok else failure_level
+    outerr = []
+    if proc.stdout:
+        outerr += ["-----", "Stdout:"] + ellipsize_lines(proc.stdout, stdout_max_lines)
+    if proc.stderr:
+        outerr += ["-----", "Stderr:"] + ellipsize_lines(proc.stderr, stderr_max_lines)
+    outerr += ["-----"]
+    outerr_s = "\n".join(outerr)
+    _log.log(
+        level,
+        f"%s %s with exit code %d\n%s",
+        args[0],
+        "succeeded" if ok else "failed",
+        proc.returncode,
+        outerr_s,
+    )
+    return ok, proc
 
 
 def rsync_with_link(
@@ -562,7 +589,36 @@ class Distrepos:
 
     def _run_createrepo(self, working_path: Path, arches: t.List[str]):
         _log.debug("_run_createrepo(%r, %r)", working_path, arches)
-        raise NotImplementedError()
+
+        # SRPMS
+        src_dir = working_path / "src"
+        src_pkglist = src_dir / "pkglist"
+
+        ok, proc = run_with_log(
+            ["createrepo_c", str(src_dir), f"--pkglist={src_pkglist}"]
+        )
+        if not ok:
+            raise TagFailure("Error running createrepo on srpms")
+
+        # arch-specific packages and debug repos
+        for arch in arches:
+            arch_dir = working_path / arch
+            arch_pkglist = arch_dir / "pkglist"
+            ok, proc = run_with_log(
+                ["createrepo_c", str(arch_dir), f"--pkglist={arch_pkglist}"]
+            )
+            if not ok:
+                raise TagFailure(f"Error running createrepo on {arch} rpms")
+
+            arch_debug_dir = arch_dir / "debug"
+            arch_debug_pkglist = arch_debug_dir / "pkglist"
+            if not arch_debug_dir.exists():
+                continue
+            ok, proc = run_with_log(
+                ["createrepo_c", str(arch_debug_dir), f"--pkglist={arch_debug_pkglist}"]
+            )
+            if not ok:
+                raise TagFailure(f"Error running createrepo on {arch} debuginfo rpms")
 
     def _run_repoview(self, working_path: Path, arches: t.List[str]):
         _log.debug("_run_repoview(%r, %r)", working_path, arches)
@@ -723,7 +779,7 @@ def get_args(argv: t.List[str]) -> Namespace:
         action="append",
         dest="tags",
         default=[],
-        help="Tag to pull. Default is all the tags in the config. Can be specified multiple times."
+        help="Tag to pull. Default is all the tags in the config. Can be specified multiple times.",
     )
     args = parser.parse_args(argv[1:])
     return args
@@ -791,9 +847,9 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
         tag_section_name = f"tag {tag_name}"
         try:
             config.add_section(tag_section_name)
-            _log.debug(
-                "Created section [%s] from [%s]", tag_section_name, tagset_section_name
-            )
+            # _log.debug(
+            #     "Created section [%s] from [%s]", tag_section_name, tagset_section_name
+            # )
         except configparser.DuplicateSectionError:
             pass
         for key, value in tagset_section.items():
@@ -803,11 +859,13 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
             if key in config[tag_section_name]:
                 continue
             new_value = value.replace("%{EL}", dver)
-            _log.debug("Setting {%s:%s} to %r", tag_section_name, key, new_value)
+            # _log.debug("Setting {%s:%s} to %r", tag_section_name, key, new_value)
             config[tag_section_name][key] = new_value
 
 
-def _get_taglist_from_config(config: ConfigParser, tagnames: t.List[str]) -> t.List[Tag]:
+def _get_taglist_from_config(
+    config: ConfigParser, tagnames: t.List[str]
+) -> t.List[Tag]:
     """
     Parse the 'tag' and 'tagset' sections in the config to return a list of Tag objects.
     This calls _expand_tagset to expand tagset sections, which may modify the config object.
