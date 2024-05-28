@@ -109,7 +109,102 @@ class Tag(t.NamedTuple):
 
 
 #
-# Other functions
+# Wrappers around process handling and logging
+#
+
+
+def ellipsize_lines(lines: t.Sequence[str], max_lines: int) -> t.List[str]:
+    """
+    If the given list of lines is longer than max_lines, replace the middle
+    with a single "..." line.
+
+    As a special case, return [] on None or any other false-ish value.
+    """
+    if not lines:
+        return []
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    half_max_lines = max_lines // 2
+    if len(lines) > max_lines:
+        return lines[:half_max_lines] + ["..."] + lines[-half_max_lines:]
+    else:
+        return lines
+
+
+def log_proc(
+    proc: t.Union[sp.CompletedProcess, sp.CalledProcessError],
+    description: str = None,
+    ok_exit: t.Union[int, t.Container[int]] = 0,
+    success_level=logging.DEBUG,
+    failure_level=logging.ERROR,
+    stdout_max_lines=24,
+    stderr_max_lines=40,
+):
+    """
+    Print the result of a process in the log; the loglevel is determined by success or failure. stdout/stderr are
+    ellipsized if too long.
+    """
+
+    if isinstance(ok_exit, int):
+        ok_exit = [ok_exit]
+    ok = proc.returncode in ok_exit
+    level = success_level if ok else failure_level
+    if not description:
+        if isinstance(proc, sp.CompletedProcess):
+            description = proc.args[0]
+        elif isinstance(proc, sp.CalledProcessError):
+            description = proc.cmd[0]
+        else:  # bad typing but let's deal with it anyway
+            description = "process"
+    outerr = []
+    if proc.stdout:
+        outerr += ["-----", "Stdout:"] + ellipsize_lines(proc.stdout, stdout_max_lines)
+    if proc.stderr:
+        outerr += ["-----", "Stderr:"] + ellipsize_lines(proc.stderr, stderr_max_lines)
+    outerr += ["-----"]
+    outerr_s = "\n".join(outerr)
+    _log.log(
+        level,
+        f"%s %s with exit code %d\n%s",
+        description,
+        "succeeded" if ok else "failed",
+        proc.returncode,
+        outerr_s,
+    )
+
+
+def run_with_log(
+    *args,
+    ok_exit: t.Union[int, t.Container[int]] = 0,
+    success_level=logging.DEBUG,
+    failure_level=logging.ERROR,
+    stdout_max_lines=24,
+    stderr_max_lines=40,
+    **kwargs,
+) -> t.Tuple[bool, sp.CompletedProcess]:
+    if isinstance(ok_exit, int):
+        ok_exit = [ok_exit]
+    kwargs.setdefault("stdout", sp.PIPE)
+    kwargs.setdefault("stderr", sp.PIPE)
+    kwargs.setdefault("encoding", "latin-1")
+    if _debug:
+        _log.debug("running %r %r", args, kwargs)
+    proc = sp.run(*args, **kwargs)
+    ok = proc.returncode in ok_exit
+    log_proc(
+        proc,
+        args[0],
+        ok_exit,
+        success_level,
+        failure_level,
+        stdout_max_lines,
+        stderr_max_lines,
+    )
+    return ok, proc
+
+
+#
+# Wrappers around rsync
 #
 
 
@@ -131,43 +226,6 @@ def rsync(*args, **kwargs) -> t.Tuple[bool, sp.CompletedProcess]:
         # This is usually caused by something like rsync not being found
         raise ProgramError(ERR_RSYNC, f"Invoking rsync failed: {err}") from err
     return proc.returncode == 0, proc
-
-
-def run_with_log(
-    *args,
-    ok_exit: t.Union[int, t.Container[int]] = 0,
-    success_level=logging.DEBUG,
-    failure_level=logging.ERROR,
-    stdout_max_lines=24,
-    stderr_max_lines=40,
-    **kwargs,
-) -> t.Tuple[bool, sp.CompletedProcess]:
-    if isinstance(ok_exit, int):
-        ok_exit = [ok_exit]
-    kwargs.setdefault("stdout", sp.PIPE)
-    kwargs.setdefault("stderr", sp.PIPE)
-    kwargs.setdefault("encoding", "latin-1")
-    if _debug:
-        _log.debug("running %r %r", args, kwargs)
-    proc = sp.run(*args, **kwargs)
-    ok = proc.returncode in ok_exit
-    level = success_level if ok else failure_level
-    outerr = []
-    if proc.stdout:
-        outerr += ["-----", "Stdout:"] + ellipsize_lines(proc.stdout, stdout_max_lines)
-    if proc.stderr:
-        outerr += ["-----", "Stderr:"] + ellipsize_lines(proc.stderr, stderr_max_lines)
-    outerr += ["-----"]
-    outerr_s = "\n".join(outerr)
-    _log.log(
-        level,
-        f"%s %s with exit code %d\n%s",
-        args[0],
-        "succeeded" if ok else "failed",
-        proc.returncode,
-        outerr_s,
-    )
-    return ok, proc
 
 
 def rsync_with_link(
@@ -202,24 +260,6 @@ def rsync_with_link(
     return rsync(*args)
 
 
-def ellipsize_lines(lines: t.Sequence[str], max_lines: int) -> t.List[str]:
-    """
-    If the given list of lines is longer than max_lines, replace the middle
-    with a single "..." line.
-
-    As a special case, return [] on None or any other false-ish value.
-    """
-    if not lines:
-        return []
-    if isinstance(lines, str):
-        lines = lines.splitlines()
-    half_max_lines = max_lines // 2
-    if len(lines) > max_lines:
-        return lines[:half_max_lines] + ["..."] + lines[-half_max_lines:]
-    else:
-        return lines
-
-
 def log_rsync(
     proc: sp.CompletedProcess,
     description: str = "rsync",
@@ -232,37 +272,16 @@ def log_rsync(
     its success or failure (i.e., returncode == 0).  If not_found_is_ok is True,
     then a source file not found (returncode == 23) is also considered ok.
     """
-    not_found = proc.returncode == RSYNC_NOT_FOUND
-    ok = proc.returncode == RSYNC_OK
-    outerr = []
-    if proc.stdout:
-        outerr += ["-----", "Stdout:"] + ellipsize_lines(proc.stdout, 24)
-    if proc.stderr:
-        outerr += ["-----", "Stderr:"] + ellipsize_lines(proc.stderr, 40)
-    outerr += ["-----"]
-    outerr_s = "\n".join(outerr)
-    if ok:
-        _log.log(
-            success_level,
-            "%s succeeded\n%s",
-            description,
-            outerr_s,
-        )
-    elif not_found and not_found_is_ok:
-        _log.log(
-            success_level,
-            "%s did not find source\n%s",
-            description,
-            outerr_s,
-        )
-    else:
-        _log.log(
-            failure_level,
-            "%s failed with exit code %d\n%s",
-            description,
-            proc.returncode,
-            outerr_s,
-        )
+    ok_exit = [RSYNC_OK]
+    if not_found_is_ok:
+        ok_exit.append(RSYNC_NOT_FOUND)
+    return log_proc(
+        proc,
+        description=description,
+        ok_exit=ok_exit,
+        success_level=success_level,
+        failure_level=failure_level,
+    )
 
 
 #
@@ -753,17 +772,17 @@ def get_args(argv: t.List[str]) -> Namespace:
         default=DEFAULT_CONFIG,
         help="Config file to pull tag and repository information from. Default: %(default)s",
     )
-    # parser.add_argument(
-    #     "--debug",
-    #     action="store_true",
-    #     help="Output debug messages",
-    # )
     parser.add_argument(
-        "--no-debug",
-        dest="debug",
-        action="store_false",
-        help="Do not output debug messages",
+        "--debug",
+        action="store_true",
+        help="Output debug messages",
     )
+    # parser.add_argument(
+    #     "--no-debug",
+    #     dest="debug",
+    #     action="store_false",
+    #     help="Do not output debug messages",
+    # )
     parser.add_argument(
         "--logfile",
         default="",
