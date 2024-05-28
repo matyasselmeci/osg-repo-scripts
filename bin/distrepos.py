@@ -111,20 +111,22 @@ class Tag(t.NamedTuple):
     debug_rpms_dest: str
     source_rpms_dest: str
 
-    def __str__(self):
-        arches_str = " ".join(self.arches)
-        joiner = "\n" + 19 * " "
-        condor_repos_str = joiner.join(str(it) for it in self.condor_repos)
-        return f"""\
-Tag {self.name}
-source           : {self.source}
-dest             : {self.dest}
+def print_tag(tag: Tag, koji_rsync: str, condor_rsync: str, destroot: str):
+    arches_str = " ".join(tag.arches)
+    print(f"""\
+Tag {tag.name}
+source           : {koji_rsync}/{tag.source}
+dest             : {destroot}/{tag.dest}
 arches           : {arches_str}
+arch_rpms_dest   : {destroot}/{tag.arch_rpms_dest}
+debug_rpms_dest  : {destroot}/{tag.debug_rpms_dest}
+source_rpms_dest : {destroot}/{tag.source_rpms_dest}""")
+    if tag.condor_repos:
+        joiner = "\n" + 19 * " " + f"{condor_rsync}/"
+        condor_repos_str = f"{condor_rsync}/" + joiner.join(str(it) for it in tag.condor_repos)
+        print(f"""\
 condor_repos     : {condor_repos_str}
-arch_rpms_dest   : {self.arch_rpms_dest}
-debug_rpms_dest  : {self.debug_rpms_dest}
-source_rpms_dest : {self.source_rpms_dest}
-"""
+""")
 
 #
 # Wrappers around process handling and logging
@@ -1047,7 +1049,9 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
     dr = parse_config(args, config)
 
     if args.print_tags:
-        print("------".join(str(it) for it in dr.taglist))
+        for tag in dr.taglist:
+            print_tag(tag, koji_rsync=dr.koji_rsync, condor_rsync=dr.condor_rsync, destroot=dr.dest_root)
+            print("------")
         return 0
 
     _log.info("Program started")
