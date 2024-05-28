@@ -695,6 +695,13 @@ def get_args(argv: t.List[str]) -> Namespace:
         help="Top of destination directory; individual repos will be placed "
         "relative to this directory. Default: %s" % DEFAULT_DESTROOT,
     )
+    parser.add_argument(
+        "--tag",
+        action="append",
+        dest="tags",
+        default=[],
+        help="Tag to pull. Default is all the tags in the config. Can be specified multiple times."
+    )
     args = parser.parse_args(argv[1:])
     return args
 
@@ -777,10 +784,11 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
             config[tag_section_name][key] = new_value
 
 
-def _get_taglist_from_config(config: ConfigParser) -> t.List[Tag]:
+def _get_taglist_from_config(config: ConfigParser, tagnames: t.List[str]) -> t.List[Tag]:
     """
     Parse the 'tag' and 'tagset' sections in the config to return a list of Tag objects.
     This calls _expand_tagset to expand tagset sections, which may modify the config object.
+    If 'tagnames' is nonempty, limits the tags to only those named in tagnames.
     """
     taglist = []
 
@@ -797,6 +805,8 @@ def _get_taglist_from_config(config: ConfigParser) -> t.List[Tag]:
             continue
 
         tag_name = section_name.split(" ", 1)[1].strip()
+        if tagnames and tag_name not in tagnames:
+            continue
         source = section.get("source", tag_name)
 
         for opt in REQUIRED_TAG_OPTIONS:
@@ -832,9 +842,9 @@ def parse_config(args: Namespace, config: ConfigParser) -> Distrepos:
     Parse the config file and return the Distrepos object from the parameters.
     Apply any overrides from the command-line.
     """
-    taglist = _get_taglist_from_config(config)
+    taglist = _get_taglist_from_config(config, args.tags)
     if not taglist:
-        raise ConfigError("No [tag ...] or [tagset ...] sections found")
+        raise ConfigError("No (matching) [tag ...] or [tagset ...] sections found")
 
     if "options" not in config:
         raise ConfigError("Missing required section [options]")
