@@ -901,8 +901,9 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
 
     def sub_el(a_string):
         """Substitute the value of `dver` for $EL"""
-        # return re.sub(r"[$]{1,2}[{]?EL[}]?", dver, a_string)
-        return string.Template(a_string).safe_substitute({"EL": dver}).replace("$", "$$")
+        # We don't want to use string.Template() here because it turns '$$' into '$'
+        # which we don't want right now.
+        return re.sub(r"[$]{1,2}[{]?EL[}]?", dver, a_string)
 
     # Loop over the dvers, expand into tag sections
     for dver in tagset_section["dvers"].split():
