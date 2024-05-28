@@ -630,7 +630,7 @@ class Distrepos:
         Create a symlink from
             <repo>/source/SRPMS (mash layout) -> <repo>/src (distrepo layout)
         """
-        _log.debug("_create_compat_symlink(%r, %r)", working_path)
+        _log.debug("_create_compat_symlink(%r)", working_path)
         try:
             (working_path / "source").mkdir(parents=True, exist_ok=True)
             if (working_path / "source/SRPMS").exists():
