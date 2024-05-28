@@ -926,7 +926,10 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
             # Do not overwrite existing options
             if key in config[tag_section_name]:
                 continue
-            value = tagset_section.get(key, raw=True)
+            try:
+                value = tagset_section.get(key, raw=False)
+            except configparser.InterpolationError:
+                value = tagset_section.get(key, raw=True)
             new_value = sub_el(value)
             # _log.debug("Setting {%s:%s} to %r", tag_section_name, key, new_value)
             config[tag_section_name][key] = new_value
