@@ -36,6 +36,9 @@ DEFAULT_CONDOR_RSYNC = "rsync://rsync.cs.wisc.edu/htcondor"
 DEFAULT_KOJI_RSYNC = "rsync://kojihub2000.chtc.wisc.edu/repos-dist"
 DEFAULT_DESTROOT = "/var/www/repo"
 
+# These options are required to be present _and_ nonempty.  Some of them may
+# come from the DEFAULT section.
+REQUIRED_TAG_OPTIONS = ["dest", "arches", "arch_rpms_subdir", "source_rpms_subdir"]
 
 _debug = False
 _log = logging.getLogger(__name__)
@@ -98,9 +101,11 @@ class Tag(t.NamedTuple):
     name: str
     source: str
     dest: str
-    condor_arch_repos: t.List[SrcDst]
-    condor_source_repos: t.List[SrcDst]
     arches: t.List[str]
+    condor_repos: t.List[SrcDst]
+    arch_rpms_dest: str
+    debug_rpms_dest: str
+    source_rpms_dest: str
 
 
 #
@@ -143,7 +148,7 @@ def rsync_with_link(
     dest_path: t.Union[str, os.PathLike],
     link_path: t.Union[None, str, os.PathLike],
     recursive=True,
-        delete=True,
+    delete=True,
 ) -> t.Tuple[bool, sp.CompletedProcess]:
     """
     rsync from a remote URL sourcepath to the destination destpath, optionally
@@ -174,7 +179,7 @@ def log_rsync(
     description: str = "rsync",
     success_level=logging.DEBUG,
     failure_level=logging.ERROR,
-        not_found_is_ok=False,
+    not_found_is_ok=False,
 ):
     """
     log the result of an rsync() call.  The log level and message are based on
@@ -219,6 +224,26 @@ class Distrepos:
     """
     The Distrepos class contains the parameters and code for one run of repo updates
     of all tags in the config.
+
+    The mash-created repo layout looks like
+        source/SRPMS/{*.src.rpm,repodata/,repoview/}
+        x86_64/{*.rpm,repodata/,repoview/}
+        x86_64/debug/{*-{debuginfo,debugsource}*.rpm,repodata/,repoview/}
+
+    The distrepo layout looks like (where <X> is the first letter of the package name)
+        src/repodata/
+        src/pkglist
+        src/Packages/<X>/*.src.rpm
+        x86_64/repodata/
+        x86_64/pkglist
+        x86_64/debug/pkglist
+        x86_64/debug/repodata/
+        x86_64/Packages/<X>/{*.rpm, *-{debuginfo,debugsource}*.rpm}
+
+    Note that the debuginfo and debugsource rpm files are mixed in with the regular files.
+    The "pkglist" files are text files listing the relative paths to the packages in the
+    repo -- this is passed to `createrepo` to put the debuginfo and debugsource RPMs into
+    separate repositories even though the files are mixed together.
     """
 
     def __init__(
@@ -246,13 +271,12 @@ class Distrepos:
         in proceeding further.
         """
         description = f"koji-hub rsync endpoint {self.koji_rsync} directory listing"
-        timeout = 300
         try:
-            ok, proc = rsync("--list-only", self.koji_rsync, timeout=timeout)
+            ok, proc = rsync("--list-only", self.koji_rsync, timeout=180)
         except sp.TimeoutExpired:
-            _log.critical(f"{description} timed out after {timeout} seconds")
+            _log.critical(f"{description} timed out")
             raise ProgramError(
-                ERR_RSYNC, "rsync from koji-hub timed out, cannot continue"
+                ERR_RSYNC, "rsync dir listing from koji-hub timed out, cannot continue"
             )
         log_rsync(
             proc,
@@ -260,7 +284,9 @@ class Distrepos:
             failure_level=logging.CRITICAL,
         )
         if not ok:
-            raise ProgramError(ERR_RSYNC, "rsync from koji-hub failed, cannot continue")
+            raise ProgramError(
+                ERR_RSYNC, "rsync dir listing from koji-hub failed, cannot continue"
+            )
 
     def run(self) -> t.Tuple[t.List[Tag], t.List[Tag]]:
         """
@@ -297,15 +323,13 @@ class Distrepos:
         source_url = f"{self.koji_rsync}/{tag.source}/{latest_dir}/"
         try:
             self._rsync_one_tag(
-                source_url, dest_path=working_path, link_path=release_path
+                source_url=source_url, dest_path=working_path, link_path=release_path
             )
-            self._rearrange_rpms(working_path, tag.arches)
-            self._merge_condor_repos(
-                tag.condor_arch_repos, tag.condor_source_repos, tag.arches
-            )
+            self._pull_condor_repos(tag)
             self._update_pkglist_files(working_path, tag.arches)
             self._run_createrepo(working_path, tag.arches)
             self._run_repoview(working_path, tag.arches)
+            self._create_compat_symlink(working_path)
             self._update_release_repos(
                 release_path=release_path,
                 working_path=working_path,
@@ -349,103 +373,94 @@ class Distrepos:
         if not ok:
             raise TagFailure(f"Error rsyncing {source_url} to {dest_path}")
 
-    def _rearrange_rpms(self, working_path: Path, arches: t.List[str]):
-        """
-        Rearrange the rsynced RPMs to go from a distrepo layout to something resembling
-        the old mash-created repo layout -- in particular, the repodata dirs need to
-        be in the same location as in the old repo layout, so we don't have to change
-        the .repo files we ship.
-
-        The mash-created repo layout looks like
-            source/SRPMS/{*.src.rpm,repodata/,repoview/}
-            x86_64/{*.rpm,repodata/,repoview/}
-            x86_64/debug/{*-{debuginfo,debugsource}*.rpm,repodata/,repoview/}
-
-        The distrepo layout looks like (where <X> is the first letter of the package name)
-            src/repodata/
-            src/pkglist
-            src/Packages/<X>/*.src.rpm
-            x86_64/repodata/
-            x86_64/pkglist
-            x86_64/debug/pkglist
-            x86_64/debug/repodata/
-            x86_64/Packages/<X>/{*.rpm, *-{debuginfo,debugsource}*.rpm}
-
-        Note that the debuginfo and debugsource rpm files are mixed in with the regular files.
-        The "pkglist" files are text files listing the relative paths to the packages in the
-        repo -- this is passed to `createrepo` to put the debuginfo and debugsource RPMs into
-        separate repositories even though the files are mixed together.
-        """
-        _log.debug("_rearrange_rpms(%r, %r)", working_path, arches)
-        # First, SRPMs. Move src -> source/SRPMS or create a symlink
-        try:
-            (working_path / "source").mkdir(parents=True, exist_ok=True)
-            if (working_path / "source/SRPMS").exists():
-                shutil.rmtree(working_path / "source/SRPMS")
-            if self.srpm_compat_symlink:
-                os.symlink(working_path / "src", working_path / "source/SRPMS")
-            else:
-                shutil.move(working_path / "src", working_path / "source/SRPMS")
-        except OSError as err:
-            _log.error("OSError rearranging SRPMs: %s", err, exc_info=_debug)
-            raise TagFailure("Error rearranging SRPMs") from err
-
-        # Next, binary RPMs.
-        for arch in arches:
-            try:
-                # XXX If we don't care about RPM locations just repodata/repoview locations then binary RPMs are already OK
-                pass
-            except OSError as err:
-                _log.error(
-                    "OSError rearranging binary RPMs for arch %s: %s",
-                    arch,
-                    err,
-                    exc_info=_debug,
-                )
-                raise TagFailure("Error rearranging binary RPMs") from err
-
-    def _merge_condor_repos(
-        self,
-        arch_repos: t.List[SrcDst],
-        source_repos: t.List[SrcDst],
-        arches: t.List[str],
-    ):
+    def _pull_condor_repos(self, tag: Tag):
         """
         rsync binary and source RPMs from condor repos defined for this tag.
         """
-        _log.debug("_merge_condor_repos(%r, %r, %r)", arch_repos, source_repos, arches)
+        _log.debug("_pull_condor_repos(%r)", tag)
         # Condor SRPMS are in a subdirectory of the arch-specific condor-directory.
         # We do not do a recursive rsync because we prefer to put the SRPMS elsewhere.
 
-        for repo in arch_repos:
-            for arch in arches:
-                src = f"{self.condor_rsync}/{repo.src}/".replace("%{ARCH}", arch)
-                dst = f"{self.working_root}/{repo.dst}/".replace("%{ARCH}", arch)
-                link = f"{self.dest_root}/{repo.dst}/".replace("%{ARCH}", arch)
-                description = f"rsync from condor repo for {arch}"
-                ok, proc = rsync_with_link(src, dst, link, delete=False, recursive=False)
+        for idx, arch in enumerate(tag.arches):
+            for repo in tag.condor_repos:
+                arch_rpms_src = f"{self.condor_rsync}/{repo.src}/".replace(
+                    "%{ARCH}", arch
+                )
+                debug_rpms_src = arch_rpms_src + "debug/"
+                source_rpms_src = arch_rpms_src + "SRPMS/"
+
+                arch_rpms_dst = (
+                    f"{self.working_root}/{tag.arch_rpms_dest}/{repo.dst}/".replace(
+                        "%{ARCH}", arch
+                    )
+                )
+                debug_rpms_dst = (
+                    f"{self.working_root}/{tag.debug_rpms_dest}/{repo.dst}/".replace(
+                        "%{ARCH}", arch
+                    )
+                )
+                source_rpms_dst = (
+                    f"{self.working_root}/{tag.source_rpms_dest}/{repo.dst}/".replace(
+                        "%{ARCH}", arch
+                    )
+                )
+
+                arch_rpms_link = (
+                    f"{self.dest_root}/{tag.arch_rpms_dest}/{repo.dst}/".replace(
+                        "%{ARCH}", arch
+                    )
+                )
+                debug_rpms_link = (
+                    f"{self.dest_root}/{tag.debug_rpms_dest}/{repo.dst}/".replace(
+                        "%{ARCH}", arch
+                    )
+                )
+                source_rpms_link = (
+                    f"{self.dest_root}/{tag.source_rpms_dest}/{repo.dst}/".replace(
+                        "%{ARCH}", arch
+                    )
+                )
+
+                # First, pull the main (binary) RPMs
+                description = f"rsync from condor repo for {arch} RPMs"
+                ok, proc = rsync_with_link(
+                    arch_rpms_src,
+                    arch_rpms_dst,
+                    arch_rpms_link,
+                    delete=False,
+                    recursive=False,
+                )
                 log_rsync(proc, description)
                 if not ok:
-                    raise TagFailure(f"Error merging condor repos: {description}")
-                description = f"rsync debuginfo from condor repo for {arch}"
-                _, proc = rsync_with_link(src + "debug/", dst, link, delete=False, recursive=False)
+                    raise TagFailure(f"Error pulling condor repos: {description}")
+
+                # Next pull the debuginfo RPMs.  These may not exist.
+                description = f"rsync from condor repo for {arch} debug RPMs"
+                _, proc = rsync_with_link(
+                    debug_rpms_src,
+                    debug_rpms_dst,
+                    debug_rpms_link,
+                    delete=False,
+                    recursive=False,
+                )
                 log_rsync(proc, description, not_found_is_ok=True)
                 if proc.returncode not in {RSYNC_OK, RSYNC_NOT_FOUND}:
-                    raise TagFailure(f"Error merging condor repos: {description}")
+                    raise TagFailure(f"Error pulling condor repos: {description}")
 
-        for repo in source_repos:
-            src = f"{self.condor_rsync}/{repo.src}/"
-            dst = f"{self.working_root}/{repo.dst}/"
-            link = f"{self.dest_root}/{repo.dst}/"
-            if arches:
-                src = src.replace("%{ARCH}", arches[0])
-                dst = dst.replace("%{ARCH}", arches[0])
-                link = link.replace("%{ARCH}", arches[0])
-            description = f"rsync from condor repo for SRPMS"
-            ok, proc = rsync_with_link(src, dst, link, recursive=False)
-            log_rsync(proc, description)
-            if not ok:
-                raise TagFailure(f"Error merging condor repos: {description}")
+                # Finally pull the SRPMs -- these are identical between arches so only
+                # pull if we're on the first arch.
+                if idx == 0:
+                    description = f"rsync from condor repo for source RPMs"
+                    ok, proc = rsync_with_link(
+                        source_rpms_src,
+                        source_rpms_dst,
+                        source_rpms_link,
+                        delete=False,
+                        recursive=False,
+                    )
+                    log_rsync(proc, description)
+                    if not ok:
+                        raise TagFailure(f"Error pulling condor repos: {description}")
 
     def _update_pkglist_files(self, working_path: Path, arches: t.List[str]):
         """
@@ -530,6 +545,20 @@ class Distrepos:
             raise NotImplementedError()
         _ = working_path
         _ = arches
+
+    def _create_compat_symlink(self, working_path: Path):
+        """
+        Create a symlink from
+            <repo>/source/SRPMS (mash layout) -> <repo>/src (distrepo layout)
+        """
+        _log.debug("_create_compat_symlink(%r, %r)", working_path)
+        try:
+            (working_path / "source").mkdir(parents=True, exist_ok=True)
+            if (working_path / "source/SRPMS").exists():
+                shutil.rmtree(working_path / "source/SRPMS")
+            os.symlink(working_path / "src", working_path / "source/SRPMS")
+        except OSError as err:
+            raise TagFailure("Error creating SRPM compat symlink") from err
 
     def _update_release_repos(
         self, release_path: Path, working_path: Path, previous_path: Path
@@ -719,12 +748,12 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
     # Check for the option we're supposed to be looping over
     if not tagset_section.get("dvers"):
         raise MissingOptionError(tagset_section_name, "dvers")
+
     # Also check for the options that are supposed to be in the 'tag' sections, otherwise
     # we'd get some confusing error messages when we get to parsing those.
-    if not tagset_section.get("dest"):
-        raise MissingOptionError(tagset_section_name, "dest")
-    if not tagset_section.get("arches"):
-        raise MissingOptionError(tagset_section_name, "arches")
+    for opt in REQUIRED_TAG_OPTIONS:
+        if not tagset_section.get(opt):
+            raise MissingOptionError(tagset_section_name, opt)
 
     # Loop over the dvers, expand into tag sections
     for dver in tagset_section["dvers"].split():
@@ -769,24 +798,29 @@ def _get_taglist_from_config(config: ConfigParser) -> t.List[Tag]:
 
         tag_name = section_name.split(" ", 1)[1].strip()
         source = section.get("source", tag_name)
-        dest = section.get("dest")
-        if not dest:
-            raise MissingOptionError(section_name, "dest")
-        arches = section.get("arches", "").split()
-        if not arches:
-            raise MissingOptionError(section_name, "arches")
-        condor_arch_repos = get_source_dest_opt(section.get("condor_arch_repos", ""))
-        condor_source_repos = get_source_dest_opt(
-            section.get("condor_source_repos", "")
-        )
+
+        for opt in REQUIRED_TAG_OPTIONS:
+            if not section.get(opt):
+                raise MissingOptionError(section_name, opt)
+
+        dest = section["dest"].strip("/")
+        arches = section["arches"].split()
+        condor_repos = get_source_dest_opt(section.get("condor_repos", ""))
+        arch_rpms_subdir = section["arch_rpms_subdir"].strip("/")
+        debug_rpms_subdir = section.get(
+            "debug_rpms_subdir", fallback=arch_rpms_subdir
+        ).strip("/")
+        source_rpms_subdir = section["source_rpms_subdir"].strip("/")
         taglist.append(
             Tag(
                 name=tag_name,
                 source=source,
                 dest=dest,
                 arches=arches,
-                condor_arch_repos=condor_arch_repos,
-                condor_source_repos=condor_source_repos,
+                condor_repos=condor_repos,
+                arch_rpms_dest=f"{dest}/{arch_rpms_subdir}",
+                debug_rpms_dest=f"{dest}/{debug_rpms_subdir}",
+                source_rpms_dest=f"{dest}/{source_rpms_subdir}",
             )
         )
 
