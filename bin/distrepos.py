@@ -157,6 +157,7 @@ def rsync_with_link(
     """
     args = [
         "--times",
+        "--stats",
     ]
     if delete:
         args.append("--delete")
@@ -174,6 +175,24 @@ def rsync_with_link(
     return rsync(*args)
 
 
+def ellipsize_lines(lines: t.Sequence[str], max_lines: int) -> t.List[str]:
+    """
+    If the given list of lines is longer than max_lines, replace the middle
+    with a single "..." line.
+
+    As a special case, return [] on None or any other false-ish value.
+    """
+    if not lines:
+        return []
+    if isinstance(lines, str):
+        lines = lines.splitlines()
+    half_max_lines = max_lines // 2
+    if len(lines) > max_lines:
+        return lines[:half_max_lines] + ["..."] + lines[-half_max_lines:]
+    else:
+        return lines
+
+
 def log_rsync(
     proc: sp.CompletedProcess,
     description: str = "rsync",
@@ -188,30 +207,30 @@ def log_rsync(
     """
     not_found = proc.returncode == RSYNC_NOT_FOUND
     ok = proc.returncode == RSYNC_OK
+    stdout = "\n".join(ellipsize_lines(proc.stdout, 24))
+    stderr = "\n".join(ellipsize_lines(proc.stderr, 40))
+    outerr = f"Stdout:\n{stdout}\n\nStderr:\n{stderr}\n------"
     if ok:
         _log.log(
             success_level,
-            "%s succeeded\nStdout:\n%s\nStderr:\n%s",
+            "%s succeeded\n%s",
             description,
-            proc.stdout,
-            proc.stderr,
+            outerr,
         )
     elif not_found and not_found_is_ok:
         _log.log(
             success_level,
-            "%s did not find source\nStdout:\n%s\nStderr:\n%s",
+            "%s did not find source\n%s",
             description,
-            proc.stdout,
-            proc.stderr,
+            outerr,
         )
     else:
         _log.log(
             failure_level,
-            "%s failed with exit code %d\nStdout:\n%s\nStderr:\n%s",
+            "%s failed with exit code %d\n%s",
             description,
             proc.returncode,
-            proc.stdout,
-            proc.stderr,
+            outerr,
         )
 
 
