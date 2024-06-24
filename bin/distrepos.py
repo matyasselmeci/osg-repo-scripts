@@ -37,7 +37,7 @@ import subprocess as sp
 import sys
 import tempfile
 import typing as t
-from argparse import ArgumentParser, Namespace
+from argparse import ArgumentParser, Namespace, RawDescriptionHelpFormatter
 from pathlib import Path
 
 
@@ -790,7 +790,9 @@ def get_args(argv: t.List[str]) -> Namespace:
     """
     Parse command-line arguments
     """
-    parser = ArgumentParser(prog=argv[0], description=__doc__)
+    parser = ArgumentParser(
+        prog=argv[0], description=__doc__, formatter_class=RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         "--config",
         default=DEFAULT_CONFIG,
