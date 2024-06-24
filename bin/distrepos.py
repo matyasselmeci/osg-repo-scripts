@@ -197,7 +197,7 @@ def log_proc(
     failure_level=logging.ERROR,
     stdout_max_lines=24,
     stderr_max_lines=40,
-):
+) -> None:
     """
     Print the result of a process in the log; the loglevel is determined by success or failure. stdout/stderr are
     ellipsized if too long.
@@ -240,6 +240,10 @@ def run_with_log(
     stderr_max_lines=40,
     **kwargs,
 ) -> t.Tuple[bool, sp.CompletedProcess]:
+    """
+    Helper function to run a command and log its output.  Returns a boolean of
+    whether the exit code was acceptable, and the CompletedProcess object.
+    """
     if isinstance(ok_exit, int):
         ok_exit = [ok_exit]
     kwargs.setdefault("stdout", sp.PIPE)
@@ -567,6 +571,10 @@ def update_pkglist_files(working_path: Path, arches: t.List[str]):
 
 
 def run_createrepo(working_path: Path, arches: t.List[str]):
+    """
+    Run createrepo on the main, source, and debuginfo dirs under the given
+    working path.
+    """
     _log.debug("run_createrepo(%r, %r)", working_path, arches)
 
     # SRPMS
