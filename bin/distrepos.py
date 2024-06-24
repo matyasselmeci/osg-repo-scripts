@@ -27,6 +27,7 @@ separate repositories even though the files are mixed together.
 
 import configparser
 from configparser import ConfigParser, ExtendedInterpolation
+import fnmatch
 import logging
 import logging.handlers
 import os
@@ -763,6 +764,13 @@ def run_one_tag(options: Options, tag: Tag) -> bool:
 #
 
 
+def match_globlist(text: str, globlist: t.List[str]) -> bool:
+    """
+    Return True if `text` matches one of the globs in globlist.
+    """
+    return any(fnmatch.fnmatch(text, g) for g in globlist)
+
+
 def get_source_dest_opt(option: str) -> t.List[SrcDst]:
     """
     Parse a config option of the form
@@ -825,7 +833,7 @@ def get_args(argv: t.List[str]) -> Namespace:
         action="append",
         dest="tags",
         default=[],
-        help="Tag to pull. Default is all the tags in the config. Can be specified multiple times.",
+        help="Tag to pull. Default is all the tags in the config. Can be specified multiple times. Can be a glob.",
     )
     parser.add_argument(
         "--print-tags",
@@ -951,7 +959,7 @@ def _get_taglist_from_config(
             continue
 
         tag_name = section_name.split(" ", 1)[1].strip()
-        if tagnames and tag_name not in tagnames:
+        if tagnames and not match_globlist(tag_name, tagnames):
             continue
         source = section.get("source", tag_name)
 
