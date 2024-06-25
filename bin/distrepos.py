@@ -27,7 +27,6 @@ separate repositories even though the files are mixed together.
 
 import configparser
 from configparser import ConfigParser, ExtendedInterpolation
-import errno
 import fcntl
 import fnmatch
 import logging
@@ -150,41 +149,41 @@ class Options(t.NamedTuple):
 #
 # Misc helpful functions
 #
-def acquire_lock(lockfile_path):
+def acquire_lock(lock_path):
     """
     Create and return the handle to a lockfile
 
     Args:
-        lockfile_path: The path to the lockfile to create; the directory must
+        lock_path: The path to the lockfile to create; the directory must
             already exist.
 
     Returns: A filehandle to be used with release_lock(), or None if we were
         unable to acquire the lock.
     """
-    filehandle = open(lockfile_path, "w")
+    filehandle = open(lock_path, "w")
     filedescriptor = filehandle.fileno()
     # Get an exclusive lock on the file (LOCK_EX) in non-blocking mode
     # (LOCK_NB), which causes the operation to raise IOError if some other
     # process already has the lock
     try:
         fcntl.flock(filedescriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except IOError as err:
-        if err.errno == errno.EWOULDBLOCK:
-            return None
-        else:
-            raise
+    except BlockingIOError:
+        return None
     return filehandle
 
 
-def release_lock(filehandle):
+def release_lock(lock_fh, lock_path):
     """
     Release a lockfile created with acquire_lock()
     Args:
-        filehandle: The filehandle created by acquire_lock()
+        lock_fh: The filehandle created by acquire_lock()
+        lock_path: The path to the lockfile to delete
     """
-    filedescriptor = filehandle.fileno()
+    filedescriptor = lock_fh.fileno()
     fcntl.flock(filedescriptor, fcntl.LOCK_UN)
-    filehandle.close()
+    lock_fh.close()
+    if lock_path:
+        os.unlink(lock_path)
 
 
 def _log_ml(lvl: int, msg: str, *args, **kwargs):
@@ -875,7 +874,7 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
     finally:
         if lock_fh:
             try:
-                release_lock(lock_fh)
+                release_lock(lock_fh, lock_path)
             except OSError as err:
                 _log.warning("OSError releasing lock file at %s: %s", lock_path, err)
     return True, ""
