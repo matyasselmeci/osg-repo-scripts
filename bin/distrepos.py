@@ -143,6 +143,11 @@ class Options(t.NamedTuple):
     make_repoview: bool = False
 
 
+#
+# Misc helpful functions
+#
+
+
 def print_tag(
     tag: Tag, koji_rsync: str, condor_rsync: str, destroot: t.Union[os.PathLike, str]
 ):
@@ -743,10 +748,16 @@ def update_release_repos(release_path: Path, working_path: Path, previous_path: 
 #
 
 
-def run_one_tag(options: Options, tag: Tag) -> bool:
+def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
     """
     Run all the actions necessary to create a repo for one tag in the config.
-    Return True on success or False on failure.
+
+    Args:
+        options: The global options for the run
+        tag: The specific tag to run actions for
+
+    Returns:
+        An (ok, error message) tuple.
     """
     release_path = options.dest_root / tag.dest
     working_path = options.working_root / tag.dest
@@ -754,13 +765,9 @@ def run_one_tag(options: Options, tag: Tag) -> bool:
     try:
         os.makedirs(working_path, exist_ok=True)
     except OSError as err:
-        _log.error(
-            "OSError creating working dir %s: %s",
-            working_path,
-            err,
-            exc_info=_debug,
-        )
-        return False
+        msg = f"OSError creating working dir {working_path}, {err}"
+        _log.error("%s", msg, exc_info=_debug)
+        return False, msg
     try:
         latest_dir = get_koji_latest_dir(options.koji_rsync, tag.source)
         source_url = f"{options.koji_rsync}/{tag.source}/{latest_dir}/"
@@ -779,9 +786,10 @@ def run_one_tag(options: Options, tag: Tag) -> bool:
             previous_path=previous_path,
         )
     except TagFailure as err:
-        _log.error("Tag %s failed: %s", tag.name, err, exc_info=_debug)
-        return False
-    return True
+        msg = f"Tag {tag.name} failed: {err}"
+        _log.error("%s", msg, exc_info=_debug)
+        return False, msg
+    return True, ""
 
 
 #
@@ -1107,22 +1115,24 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
                 condor_rsync=options.condor_rsync,
                 destroot=options.dest_root,
             )
-        if run_one_tag(options, tag):
+        ok, err = run_one_tag(options, tag)
+        if ok:
             _log.info("Tag %s completed", tag.name)
             successful.append(tag)
         else:
             _log.error("Tag %s failed", tag.name)
-            failed.append(tag)
+            failed.append((tag, err))
 
     _log.info("Run completed")
 
     # Report on the results
     successful_names = [it.name for it in successful]
-    failed_names = [it.name for it in failed]
     if successful:
         _log.info("%d tags succeeded: %r", len(successful_names), successful_names)
     if failed:
-        _log.error("%d tags failed: %r", len(failed_names), failed_names)
+        _log.error("%d tags failed:", len(failed))
+        for tag, err in failed:
+            _log.error("%-40s: %s", tag.name, err)
         return ERR_FAILURES
     elif not successful:
         _log.error("No tags were pulled")
