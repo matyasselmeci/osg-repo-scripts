@@ -434,7 +434,13 @@ def get_koji_latest_dir(koji_rsync: str, tagdir: str) -> str:
             raise TagFailure("Timeout getting 'latest' dir")
         log_rsync(proc, "Getting 'latest' dir symlink")
         if not ok:
-            raise TagFailure("Error getting 'latest' dir")
+            if proc.returncode == RSYNC_NOT_FOUND:
+                raise TagFailure(
+                    "'latest' dir not found; dist-repo may not have been "
+                    "run for this tag"
+                )
+            else:
+                raise TagFailure("Error getting 'latest' dir")
         # we have copied the "latest" symlink as a (now broken) symlink. Read the text of the link to get
         # the directory on the remote side.
         return os.path.basename(os.readlink(destpath))
@@ -553,6 +559,12 @@ def update_pkglist_files(working_path: Path, arches: t.List[str]):
     src_dir = working_path / "src"
     src_pkglist = src_dir / "pkglist"
     src_packages_dir = src_dir / "Packages"
+
+    if not src_dir.exists():
+        raise TagFailure(
+            f"No {src_dir} directory found; the repo may not have been "
+            "generated with the right options (--with-src)"
+        )
     try:
         with open(f"{src_pkglist}.new", "wt") as new_pkglist_fh:
             # Walk the Packages directory tree and add the relative paths to the RPMs
