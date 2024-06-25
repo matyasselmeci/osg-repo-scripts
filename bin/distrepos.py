@@ -148,39 +148,56 @@ class Options(t.NamedTuple):
 #
 
 
-def print_tag(
-    tag: Tag, koji_rsync: str, condor_rsync: str, destroot: t.Union[os.PathLike, str]
-):
+def _log_ml(lvl: int, msg: str, *args, **kwargs):
     """
-    Pretty-print the parsed information for a tag we are going to copy.
+    Log a potentially multi-line message by splitting the lines and doing
+    individual calls to _log.log().  exc_info and stack_info will only be
+    printed for the last line.
+    """
+    if lvl >= _log.getEffectiveLevel():
+        orig_kwargs = kwargs.copy()
+        msg_lines = (msg % args).splitlines()
+        last_line = msg_lines[-1]
+        kwargs.pop("exc_info", None)
+        kwargs.pop("stack_info", None)
+        for line in msg_lines[:-1]:
+            _log.log(lvl, "%s", line, **kwargs)
+        return _log.log(lvl, "%s", last_line, **orig_kwargs)
+
+
+def format_tag(
+    tag: Tag, koji_rsync: str, condor_rsync: str, destroot: t.Union[os.PathLike, str]
+) -> str:
+    """
+    Return the pretty-printed parsed information for a tag we are going to copy.
 
     Args:
         tag: the Tag object to print the information for
         koji_rsync: the base rsync URL for the Koji distrepos
         condor_rsync: the rsync URL for the Condor repos
         destroot: the local directory that files will be rsynced to
+
+    Returns: the formatted text as a string
     """
     arches_str = " ".join(tag.arches)
-    print(
-        f"""\
+    ret = f"""\
 Tag {tag.name}
 source           : {koji_rsync}/{tag.source}
 dest             : {destroot}/{tag.dest}
 arches           : {arches_str}
 arch_rpms_dest   : {destroot}/{tag.arch_rpms_dest}
 debug_rpms_dest  : {destroot}/{tag.debug_rpms_dest}
-source_rpms_dest : {destroot}/{tag.source_rpms_dest}"""
-    )
+source_rpms_dest : {destroot}/{tag.source_rpms_dest}
+"""
     if tag.condor_repos:
         joiner = "\n" + 19 * " " + f"{condor_rsync}/"
         condor_repos_str = f"{condor_rsync}/" + joiner.join(
             str(it) for it in tag.condor_repos
         )
-        print(
-            f"""\
+        ret += f"""\
 condor_repos     : {condor_repos_str}
 """
-        )
+    return ret
 
 
 #
@@ -1091,11 +1108,13 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
 
     if args.print_tags:
         for tag in taglist:
-            print_tag(
-                tag,
-                koji_rsync=options.koji_rsync,
-                condor_rsync=options.condor_rsync,
-                destroot=options.dest_root,
+            print(
+                format_tag(
+                    tag,
+                    koji_rsync=options.koji_rsync,
+                    condor_rsync=options.condor_rsync,
+                    destroot=options.dest_root,
+                )
             )
             print("------")
         return 0
@@ -1109,13 +1128,16 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
     for tag in taglist:
         _log.info("----------------------------------------")
         _log.info("Starting tag %s", tag.name)
-        if sys.stdout.isatty():
-            print_tag(
+        _log_ml(
+            logging.DEBUG,
+            "%s",
+            format_tag(
                 tag,
                 koji_rsync=options.koji_rsync,
                 condor_rsync=options.condor_rsync,
                 destroot=options.dest_root,
-            )
+            ),
+        )
         ok, err = run_one_tag(options, tag)
         if ok:
             _log.info("Tag %s completed", tag.name)
@@ -1130,11 +1152,16 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
     # Report on the results
     successful_names = [it.name for it in successful]
     if successful:
-        _log.info("%d tags succeeded: %r", len(successful_names), successful_names)
+        _log_ml(
+            logging.INFO,
+            "%d tags succeeded:\n  %s",
+            len(successful_names),
+            "\n  ".join(successful_names),
+        )
     if failed:
         _log.error("%d tags failed:", len(failed))
         for _, err in failed:  # The error message already contains the tag name
-            _log.error("%s", err)
+            _log.error("  %s", err)
         return ERR_FAILURES
     elif not successful:
         _log.error("No tags were pulled")
