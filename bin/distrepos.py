@@ -146,6 +146,15 @@ class Options(t.NamedTuple):
 def print_tag(
     tag: Tag, koji_rsync: str, condor_rsync: str, destroot: t.Union[os.PathLike, str]
 ):
+    """
+    Pretty-print the parsed information for a tag we are going to copy.
+
+    Args:
+        tag: the Tag object to print the information for
+        koji_rsync: the base rsync URL for the Koji distrepos
+        condor_rsync: the rsync URL for the Condor repos
+        destroot: the local directory that files will be rsynced to
+    """
     arches_str = " ".join(tag.arches)
     print(
         f"""\
@@ -202,8 +211,20 @@ def log_proc(
     stderr_max_lines=40,
 ) -> None:
     """
-    Print the result of a process in the log; the loglevel is determined by success or failure. stdout/stderr are
-    ellipsized if too long.
+    Print the result of a process in the log; the loglevel is determined by
+    success or failure. stdout/stderr are ellipsized if too long.
+
+    Args:
+        proc: The result of running a process
+        description: An optional description of what we tried to do by
+            launching the process
+        ok_exit: One or more exit codes that are considered not failures
+        success_level: The loglevel for printing stdout/stderr on success
+        failure_level: The loglevel for printing stdout/stderr on failure
+        stdout_max_lines: The maximum number of lines of stdout to print before
+            ellipsizing
+        stderr_max_lines: The maximum number of lines of stderr to print before
+            ellipsizing
     """
 
     if isinstance(ok_exit, int):
@@ -246,6 +267,8 @@ def run_with_log(
     """
     Helper function to run a command and log its output.  Returns a boolean of
     whether the exit code was acceptable, and the CompletedProcess object.
+
+    See Also: log_proc()
     """
     if isinstance(ok_exit, int):
         ok_exit = [ok_exit]
