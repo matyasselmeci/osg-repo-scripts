@@ -143,7 +143,9 @@ class Options(t.NamedTuple):
     make_repoview: bool = False
 
 
-def print_tag(tag: Tag, koji_rsync: str, condor_rsync: str, destroot: str):
+def print_tag(
+    tag: Tag, koji_rsync: str, condor_rsync: str, destroot: t.Union[os.PathLike, str]
+):
     arches_str = " ".join(tag.arches)
     print(
         f"""\
