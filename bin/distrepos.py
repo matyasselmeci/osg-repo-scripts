@@ -1107,6 +1107,7 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
     successful = []
     failed = []
     for tag in taglist:
+        _log.info("----------------------------------------")
         _log.info("Starting tag %s", tag.name)
         if sys.stdout.isatty():
             print_tag(
@@ -1123,6 +1124,7 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
             _log.error("Tag %s failed", tag.name)
             failed.append((tag, err))
 
+    _log.info("----------------------------------------")
     _log.info("Run completed")
 
     # Report on the results
@@ -1131,8 +1133,8 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
         _log.info("%d tags succeeded: %r", len(successful_names), successful_names)
     if failed:
         _log.error("%d tags failed:", len(failed))
-        for tag, err in failed:
-            _log.error("%-40s: %s", tag.name, err)
+        for _, err in failed:  # The error message already contains the tag name
+            _log.error("%s", err)
         return ERR_FAILURES
     elif not successful:
         _log.error("No tags were pulled")
