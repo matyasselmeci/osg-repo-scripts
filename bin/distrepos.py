@@ -27,6 +27,7 @@ separate repositories even though the files are mixed together.
 
 import configparser
 from configparser import ConfigParser, ExtendedInterpolation
+import fcntl
 import fnmatch
 import logging
 import logging.handlers
@@ -57,6 +58,7 @@ DEFAULT_CONFIG = "/etc/distrepos.conf"
 DEFAULT_CONDOR_RSYNC = "rsync://rsync.cs.wisc.edu/htcondor"
 DEFAULT_KOJI_RSYNC = "rsync://kojihub2000.chtc.wisc.edu/repos-dist"
 DEFAULT_DESTROOT = "/var/www/repo"
+DEFAULT_LOCK_DIR = "/var/lock/rsync_dist_repo"
 
 # These options are required to be present _and_ nonempty.  Some of them may
 # come from the DEFAULT section.
@@ -140,12 +142,48 @@ class Options(t.NamedTuple):
     previous_root: Path
     koji_rsync: str
     condor_rsync: str
+    lock_dir: t.Optional[Path]
     make_repoview: bool = False
 
 
 #
 # Misc helpful functions
 #
+def acquire_lock(lock_path):
+    """
+    Create and return the handle to a lockfile
+
+    Args:
+        lock_path: The path to the lockfile to create; the directory must
+            already exist.
+
+    Returns: A filehandle to be used with release_lock(), or None if we were
+        unable to acquire the lock.
+    """
+    filehandle = open(lock_path, "w")
+    filedescriptor = filehandle.fileno()
+    # Get an exclusive lock on the file (LOCK_EX) in non-blocking mode
+    # (LOCK_NB), which causes the operation to raise IOError if some other
+    # process already has the lock
+    try:
+        fcntl.flock(filedescriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return None
+    return filehandle
+
+
+def release_lock(lock_fh, lock_path):
+    """
+    Release a lockfile created with acquire_lock()
+    Args:
+        lock_fh: The filehandle created by acquire_lock()
+        lock_path: The path to the lockfile to delete
+    """
+    filedescriptor = lock_fh.fileno()
+    fcntl.flock(filedescriptor, fcntl.LOCK_UN)
+    lock_fh.close()
+    if lock_path:
+        os.unlink(lock_path)
 
 
 def _log_ml(lvl: int, msg: str, *args, **kwargs):
@@ -797,6 +835,21 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
         msg = f"OSError creating working dir {working_path}, {err}"
         _log.error("%s", msg, exc_info=_debug)
         return False, msg
+    lock_fh = None
+    lock_path = ""
+    if options.lock_dir:
+        lock_path = options.lock_dir / tag.name
+        try:
+            os.makedirs(options.lock_dir, exist_ok=True)
+            lock_fh = acquire_lock(lock_path)
+        except OSError as err:
+            msg = f"OSError creating lockfile at {lock_path}, {err}"
+            _log.error("%s", msg, exc_info=_debug)
+            return False, msg
+        if not lock_fh:
+            msg = f"Another run in progress (unable to lock file {lock_path})"
+            _log.error("%s", msg)
+            return False, msg
     try:
         latest_dir = get_koji_latest_dir(options.koji_rsync, tag.source)
         source_url = f"{options.koji_rsync}/{tag.source}/{latest_dir}/"
@@ -818,6 +871,12 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
         msg = f"Tag {tag.name} failed: {err}"
         _log.error("%s", msg, exc_info=_debug)
         return False, msg
+    finally:
+        if lock_fh:
+            try:
+                release_lock(lock_fh, lock_path)
+            except OSError as err:
+                _log.warning("OSError releasing lock file at %s: %s", lock_path, err)
     return True, ""
 
 
@@ -891,11 +950,18 @@ def get_args(argv: t.List[str]) -> Namespace:
         "relative to this directory. Default: %s" % DEFAULT_DESTROOT,
     )
     parser.add_argument(
+        "--lock-dir",
+        default=DEFAULT_LOCK_DIR,
+        help="Directory to create locks in to simultaneous writes for the same tag. "
+        "Set to empty to disable locking. Default: %(default)s",
+    )
+    parser.add_argument(
         "--tag",
         action="append",
         dest="tags",
         default=[],
-        help="Tag to pull. Default is all the tags in the config. Can be specified multiple times. Can be a glob.",
+        help="Tag to pull. Default is all the tags in the config. "
+        "Can be specified multiple times. Can be a glob.",
     )
     parser.add_argument(
         "--print-tags",
@@ -1082,6 +1148,7 @@ def parse_config(
             previous_root=Path(previous_root),
             condor_rsync=options_section.get("condor_rsync", DEFAULT_CONDOR_RSYNC),
             koji_rsync=options_section.get("koji_rsync", DEFAULT_KOJI_RSYNC),
+            lock_dir=Path(args.lock_dir) if args.lock_dir else None,
         ),
         taglist,
     )
