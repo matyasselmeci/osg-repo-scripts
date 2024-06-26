@@ -835,6 +835,8 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
         msg = f"OSError creating working dir {working_path}, {err}"
         _log.error("%s", msg, exc_info=_debug)
         return False, msg
+
+    # Set up the lock file
     lock_fh = None
     lock_path = ""
     if options.lock_dir:
@@ -850,6 +852,8 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
             msg = f"Another run in progress (unable to lock file {lock_path})"
             _log.error("%s", msg)
             return False, msg
+
+    # Run the various steps
     try:
         latest_dir = get_koji_latest_dir(options.koji_rsync, tag.source)
         source_url = f"{options.koji_rsync}/{tag.source}/{latest_dir}/"
@@ -868,10 +872,10 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
             previous_path=previous_path,
         )
     except TagFailure as err:
-        msg = f"Tag {tag.name} failed: {err}"
-        _log.error("%s", msg, exc_info=_debug)
-        return False, msg
+        _log.error("Tag %s failed: %s", tag.name, err, exc_info=_debug)
+        return False, str(err)
     finally:
+        # Release the lock
         if lock_fh:
             try:
                 release_lock(lock_fh, lock_path)
@@ -1239,8 +1243,8 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
         )
     if failed:
         _log.error("%d tags failed:", len(failed))
-        for _, err in failed:  # The error message already contains the tag name
-            _log.error("  %s", err)
+        for tag, err in failed:
+            _log.error("  %-40s: %s", tag.name, err)
         return ERR_FAILURES
     elif not successful:
         _log.error("No tags were pulled")
