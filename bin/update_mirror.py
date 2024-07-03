@@ -1,7 +1,7 @@
 #!/usr/bin/python
 
-from __future__ import print_function
-import urllib2
+
+import urllib.request, urllib.error, urllib.parse
 import time
 import sys
 import os
@@ -11,17 +11,17 @@ import fcntl
 import errno
 import re
 
-def log(log):
-    print("[%s]"%sys.argv[0], time.strftime("%a %m/%d/%y %H:%M:%S %Z: ", time.localtime()), log)
+def log(line):
+    print("[%s]"%sys.argv[0], time.strftime("%a %m/%d/%y %H:%M:%S %Z: ", time.localtime()), line)
 
 def lock(path):
-    dir = os.path.dirname(path)
-    if dir and not os.path.exists(dir):
-        os.makedirs(dir)
+    lockdir = os.path.dirname(path)
+    if lockdir and not os.path.exists(lockdir):
+        os.makedirs(lockdir)
     lock_fd = os.open(path, os.O_WRONLY | os.O_CREAT)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except IOError, e:
+    except IOError as e:
         if e.errno == errno.EWOULDBLOCK:
             log("Script appears to already be running.")
             sys.exit(1)
@@ -52,7 +52,7 @@ log("hosts:"+str(mirrorhosts))
 log("archs:"+str(archs))
 log("threshold:"+str(threshold)+" (hours)")
 log("timeout:"+str(timeout)+" (seconds)")
-print
+print()
 
 #gethostname() returns actual instance name (like repo2.opensciencegrid.org)
 hostname="repo.opensciencegrid.org"
@@ -78,13 +78,13 @@ def mkarchurl(host,tag,arch):
 
 def test(hosts,tag,arch):
     # always include repo.opensciencegrid.org in list
-    list = [mkarchurl('https://'+hostname,tag,arch)]
+    urllist = [mkarchurl('http://'+hostname,tag,arch)]
     for host in hosts:
         url = mkarchurl(host,tag,arch)
         mdurl=url+"/repodata/repomd.xml"
         log("checking: "+mdurl)
         try:
-            response = urllib2.urlopen(mdurl, timeout=10)
+            response = urllib.request.urlopen(mdurl, timeout=10)
             if response.code != 200:
                 log("\tbad(non 200) response.code:"+response.code)
             else:
@@ -95,19 +95,19 @@ def test(hosts,tag,arch):
                 if age > 3600 * threshold:
                     log("\ttoo old ("+str(age)+" seconds old) Last-Modified: "+lastmod_str+" .. ignoring")
                 else:
-                    list.append(url)
+                    urllist.append(url)
                     log("\tall good")
-        except urllib2.HTTPError,e:
+        except urllib.error.HTTPError as e:
             #no such repo on this host..
             log("\tURL caught while processing url:"+url+" "+str(e))
-        except urllib2.URLError,e:
+        except urllib.error.URLError as e:
             # Error contacting the host. Remove it from the mirrorhosts for this run.
             log("\tExcluding host due to connection error for url:"+url+" "+str(e))
             mirrorhosts.remove(host)
-        except Exception, e:
+        except Exception as e:
             log("\tException caught while processing url:"+url+" "+str(e))
 
-    return list
+    return urllist
 
 log("evacuating live dir for osg")
 
@@ -128,15 +128,15 @@ os.symlink(".osg.prev", "/usr/local/mirror/osg")
 for tag in tags:
     log("checking for "+tag)
     series,dver,repo = tagsplit(tag)
-    tag_archs = __builtins__.list(archs)  # make a copy
+    tag_archs = list(archs)  # make a copy
     if "23" in series:  # XXX This script will be replaced before OSG 24 anyway
         tag_archs.append("aarch64")
     repopath = '/'.join(["/usr/local/mirror/.osg.new",series,dver,repo])
     os.makedirs(repopath)
     for arch in tag_archs:
-        list = test(mirrorhosts,tag,arch)
+        urllist = test(mirrorhosts,tag,arch)
         f = open(repopath + "/" + arch, "w")
-        for m in list:
+        for m in urllist:
             f.write(m+"\n")
         f.close()
 
