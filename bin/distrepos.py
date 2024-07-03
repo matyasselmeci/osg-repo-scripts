@@ -1050,12 +1050,10 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
             #     "Created section [%s] from [%s]", tag_section_name, tagset_section_name
             # )
         except configparser.DuplicateSectionError:
-            pass
+            _log.debug("Skipping section [%s] because it already exists", tag_section_name)
+            continue
         for key in tagset_section:
             if key == "dvers":
-                continue
-            # Do not overwrite existing options
-            if key in config[tag_section_name]:
                 continue
             try:
                 value = tagset_section.get(key, raw=False)
