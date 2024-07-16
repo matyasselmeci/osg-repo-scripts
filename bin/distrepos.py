@@ -143,13 +143,15 @@ class Options(t.NamedTuple):
     koji_rsync: str
     condor_rsync: str
     lock_dir: t.Optional[Path]
+    mirror_root: t.Optional[Path]
+    mirror_hosts: t.List[str]
     make_repoview: bool = False
 
 
 #
 # Misc helpful functions
 #
-def acquire_lock(lock_path):
+def acquire_lock(lock_path: t.Union[str, os.PathLike]) -> t.Optional[t.IO]:
     """
     Create and return the handle to a lockfile
 
@@ -172,13 +174,15 @@ def acquire_lock(lock_path):
     return filehandle
 
 
-def release_lock(lock_fh, lock_path):
+def release_lock(lock_fh: t.Optional[t.IO], lock_path: t.Optional[str]):
     """
     Release a lockfile created with acquire_lock()
     Args:
         lock_fh: The filehandle created by acquire_lock()
         lock_path: The path to the lockfile to delete
     """
+    if not lock_fh:
+        return  # no lock; do nothing
     filedescriptor = lock_fh.fileno()
     fcntl.flock(filedescriptor, fcntl.LOCK_UN)
     lock_fh.close()
@@ -884,6 +888,46 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
     return True, ""
 
 
+
+#
+# Functions for dealing with the mirror list
+#
+
+def create_mirrorlists(options: Options, tags: t.Sequence[Tag]) -> t.Tuple[bool, str]:
+    """
+    Create the files used for mirror lists
+
+    Args:
+        options: The global options for the run
+        tags: The list of tags to create mirror lists for
+
+    Returns:
+        A (success, message) tuple where success is True or False, and message
+        describes the particular failure.
+    """
+    # Set up the lock file
+    lock_fh = None
+    lock_path = ""
+    if options.lock_dir:
+        lock_path = options.lock_dir / "mirrors"
+        try:
+            os.makedirs(options.lock_dir, exist_ok=True)
+            lock_fh = acquire_lock(lock_path)
+        except OSError as err:
+            msg = f"OSError creating lockfile at {lock_path}, {err}"
+            _log.error("%s", msg, exc_info=_debug)
+            return False, msg
+        if not lock_fh:
+            msg = f"Another run in progress (unable to lock file {lock_path})"
+            _log.error("%s", msg)
+            return False, msg
+
+    try:
+        pass
+    finally:
+        release_lock(lock_fh, lock_path)
+
+
 #
 # Functions for handling command-line arguments and config
 #
@@ -1143,6 +1187,8 @@ def parse_config(
         dest_root = options_section.get("dest_root", DEFAULT_DESTROOT).rstrip("/")
         working_root = options_section.get("working_root", dest_root + ".working")
         previous_root = options_section.get("previous_root", dest_root + ".previous")
+    mirror_root = options_section.get("mirror_root", None)
+    mirror_hosts = options_section.get("mirror_hosts", "").split()
     return (
         Options(
             dest_root=Path(dest_root),
@@ -1151,6 +1197,8 @@ def parse_config(
             condor_rsync=options_section.get("condor_rsync", DEFAULT_CONDOR_RSYNC),
             koji_rsync=options_section.get("koji_rsync", DEFAULT_KOJI_RSYNC),
             lock_dir=Path(args.lock_dir) if args.lock_dir else None,
+            mirror_root=mirror_root,
+            mirror_hosts=mirror_hosts,
         ),
         taglist,
     )
