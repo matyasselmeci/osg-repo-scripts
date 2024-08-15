@@ -298,3 +298,30 @@ def match_globlist(text: str, globlist: t.List[str]) -> bool:
     Return True if `text` matches one of the globs in globlist.
     """
     return any(fnmatch.fnmatch(text, g) for g in globlist)
+
+
+def check_rsync(koji_rsync: str, log: t.Optional[logging.Logger] = None) -> None:
+    """
+    Run an rsync listing of the rsync root. If this fails, there is no point
+    in proceeding further.
+    """
+    if not log:
+        log = logging.getLogger(__name__)
+    description = f"koji-hub rsync endpoint {koji_rsync} directory listing"
+    try:
+        ok, proc = rsync("--list-only", koji_rsync, timeout=180, log=log)
+    except sp.TimeoutExpired:
+        log.critical(f"{description} timed out")
+        raise ProgramError(
+            ERR_RSYNC, "rsync dir listing from koji-hub timed out, cannot continue"
+        )
+    log_rsync(
+        proc,
+        description,
+        failure_level=logging.CRITICAL,
+        log=log,
+    )
+    if not ok:
+        raise ProgramError(
+            ERR_RSYNC, "rsync dir listing from koji-hub failed, cannot continue"
+        )
