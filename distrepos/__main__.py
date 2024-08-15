@@ -340,11 +340,6 @@ def run_createrepo(working_path: Path, arches: t.List[str]):
             raise TagFailure(f"Error {description}")
 
 
-def run_repoview(working_path: Path, arches: t.List[str]):
-    _log.debug("run_repoview(%r, %r)", working_path, arches)
-    raise NotImplementedError()
-
-
 def create_compat_symlink(working_path: Path):
     """
     Create a symlink from
@@ -490,8 +485,6 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
         pull_condor_repos(options, tag)
         update_pkglist_files(working_path, tag.arches)
         run_createrepo(working_path, tag.arches)
-        if options.make_repoview:
-            run_repoview(working_path, tag.arches)
         create_compat_symlink(working_path)
         update_release_repos(
             release_path=release_path,

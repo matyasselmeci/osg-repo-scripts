@@ -56,7 +56,6 @@ class Options(t.NamedTuple):
     lock_dir: t.Optional[Path]
     mirror_root: t.Optional[Path]
     mirror_hosts: t.List[str]
-    make_repoview: bool = False
 
 
 def format_tag(
