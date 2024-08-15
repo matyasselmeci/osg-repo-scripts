@@ -26,8 +26,6 @@ separate repositories even though the files are mixed together.
 """
 
 import configparser
-import fcntl
-import fnmatch
 import logging
 import logging.handlers
 import os
@@ -42,13 +40,26 @@ from argparse import ArgumentParser, Namespace, RawDescriptionHelpFormatter
 from configparser import ConfigParser, ExtendedInterpolation
 from pathlib import Path
 
+from distrepos.error import (
+    ERR_EMPTY,
+    ERR_FAILURES,
+    ERR_RSYNC,
+    ConfigError,
+    MissingOptionError,
+    ProgramError,
+    TagFailure,
+)
+from distrepos.util import (
+    acquire_lock,
+    log_ml,
+    log_proc,
+    match_globlist,
+    release_lock,
+    run_with_log,
+)
+
 MB = 1 << 20
 LOG_MAX_SIZE = 500 * MB
-
-ERR_CONFIG = 3
-ERR_RSYNC = 4
-ERR_FAILURES = 5
-ERR_EMPTY = 6
 
 RSYNC_OK = 0
 RSYNC_NOT_FOUND = 23
@@ -65,47 +76,6 @@ REQUIRED_TAG_OPTIONS = ["dest", "arches", "arch_rpms_subdir", "source_rpms_subdi
 
 _debug = False
 _log = logging.getLogger(__name__)
-
-
-#
-# Error classes
-#
-
-
-class ProgramError(RuntimeError):
-    """
-    Class for fatal errors during execution.  The `returncode` parameter
-    should be used as the exit code for the program.
-    """
-
-    def __init__(self, returncode, *args):
-        super().__init__(*args)
-        self.returncode = returncode
-
-
-class ConfigError(ProgramError):
-    """Class for errors with the configuration"""
-
-    def __init__(self, *args):
-        super().__init__(ERR_CONFIG, *args)
-
-    def __str__(self):
-        return f"Config error: {super().__str__()}"
-
-
-class MissingOptionError(ConfigError):
-    """Class for missing a required option in a config section"""
-
-    def __init__(self, section_name: str, option_name: str):
-        super().__init__(
-            f"Section [{section_name}] missing or empty required option {option_name}"
-        )
-
-
-class TagFailure(Exception):
-    """
-    Class for failure for a specific tag.  Not meant to be fatal.
-    """
 
 
 #
@@ -150,60 +120,6 @@ class Options(t.NamedTuple):
 #
 # Misc helpful functions
 #
-def acquire_lock(lock_path: t.Union[str, os.PathLike]) -> t.Optional[t.IO]:
-    """
-    Create and return the handle to a lockfile
-
-    Args:
-        lock_path: The path to the lockfile to create; the directory must
-            already exist.
-
-    Returns: A filehandle to be used with release_lock(), or None if we were
-        unable to acquire the lock.
-    """
-    filehandle = open(lock_path, "w")
-    filedescriptor = filehandle.fileno()
-    # Get an exclusive lock on the file (LOCK_EX) in non-blocking mode
-    # (LOCK_NB), which causes the operation to raise IOError if some other
-    # process already has the lock
-    try:
-        fcntl.flock(filedescriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return None
-    return filehandle
-
-
-def release_lock(lock_fh: t.Optional[t.IO], lock_path: t.Optional[str]):
-    """
-    Release a lockfile created with acquire_lock()
-    Args:
-        lock_fh: The filehandle created by acquire_lock()
-        lock_path: The path to the lockfile to delete
-    """
-    if not lock_fh:
-        return  # no lock; do nothing
-    filedescriptor = lock_fh.fileno()
-    fcntl.flock(filedescriptor, fcntl.LOCK_UN)
-    lock_fh.close()
-    if lock_path:
-        os.unlink(lock_path)
-
-
-def _log_ml(lvl: int, msg: str, *args, **kwargs):
-    """
-    Log a potentially multi-line message by splitting the lines and doing
-    individual calls to _log.log().  exc_info and stack_info will only be
-    printed for the last line.
-    """
-    if lvl >= _log.getEffectiveLevel():
-        orig_kwargs = kwargs.copy()
-        msg_lines = (msg % args).splitlines()
-        last_line = msg_lines[-1]
-        kwargs.pop("exc_info", None)
-        kwargs.pop("stack_info", None)
-        for line in msg_lines[:-1]:
-            _log.log(lvl, "%s", line, **kwargs)
-        return _log.log(lvl, "%s", last_line, **orig_kwargs)
 
 
 def format_tag(
@@ -239,119 +155,6 @@ source_rpms_dest : {destroot}/{tag.source_rpms_dest}
 condor_repos     : {condor_repos_str}
 """
     return ret
-
-
-#
-# Wrappers around process handling and logging
-#
-
-
-def ellipsize_lines(lines: t.Sequence[str], max_lines: int) -> t.List[str]:
-    """
-    If the given list of lines is longer than max_lines, replace the middle
-    with a single "..." line.
-
-    As a special case, return [] on None or any other false-ish value.
-    """
-    if not lines:
-        return []
-    if isinstance(lines, str):
-        lines = lines.splitlines()
-    half_max_lines = max_lines // 2
-    if len(lines) > max_lines:
-        return lines[:half_max_lines] + ["..."] + lines[-half_max_lines:]
-    else:
-        return lines
-
-
-def log_proc(
-    proc: t.Union[sp.CompletedProcess, sp.CalledProcessError],
-    description: str = None,
-    ok_exit: t.Union[int, t.Container[int]] = 0,
-    success_level=logging.DEBUG,
-    failure_level=logging.ERROR,
-    stdout_max_lines=24,
-    stderr_max_lines=40,
-) -> None:
-    """
-    Print the result of a process in the log; the loglevel is determined by
-    success or failure. stdout/stderr are ellipsized if too long.
-
-    Args:
-        proc: The result of running a process
-        description: An optional description of what we tried to do by
-            launching the process
-        ok_exit: One or more exit codes that are considered not failures
-        success_level: The loglevel for printing stdout/stderr on success
-        failure_level: The loglevel for printing stdout/stderr on failure
-        stdout_max_lines: The maximum number of lines of stdout to print before
-            ellipsizing
-        stderr_max_lines: The maximum number of lines of stderr to print before
-            ellipsizing
-    """
-
-    if isinstance(ok_exit, int):
-        ok_exit = [ok_exit]
-    ok = proc.returncode in ok_exit
-    level = success_level if ok else failure_level
-    if not description:
-        if isinstance(proc, sp.CompletedProcess):
-            description = proc.args[0]
-        elif isinstance(proc, sp.CalledProcessError):
-            description = proc.cmd[0]
-        else:  # bad typing but let's deal with it anyway
-            description = "process"
-    outerr = []
-    if proc.stdout:
-        outerr += ["-----", "Stdout:"] + ellipsize_lines(proc.stdout, stdout_max_lines)
-    if proc.stderr:
-        outerr += ["-----", "Stderr:"] + ellipsize_lines(proc.stderr, stderr_max_lines)
-    outerr += ["-----"]
-    outerr_s = "\n".join(outerr)
-    _log.log(
-        level,
-        f"%s %s with exit code %d\n%s",
-        description,
-        "succeeded" if ok else "failed",
-        proc.returncode,
-        outerr_s,
-    )
-
-
-def run_with_log(
-    *args,
-    ok_exit: t.Union[int, t.Container[int]] = 0,
-    success_level=logging.DEBUG,
-    failure_level=logging.ERROR,
-    stdout_max_lines=24,
-    stderr_max_lines=40,
-    **kwargs,
-) -> t.Tuple[bool, sp.CompletedProcess]:
-    """
-    Helper function to run a command and log its output.  Returns a boolean of
-    whether the exit code was acceptable, and the CompletedProcess object.
-
-    See Also: log_proc()
-    """
-    if isinstance(ok_exit, int):
-        ok_exit = [ok_exit]
-    kwargs.setdefault("stdout", sp.PIPE)
-    kwargs.setdefault("stderr", sp.PIPE)
-    kwargs.setdefault("encoding", "latin-1")
-    if _debug:
-        _log.debug("running %r %r", args, kwargs)
-    proc = sp.run(*args, **kwargs)
-    ok = proc.returncode in ok_exit
-    log_proc(
-        proc,
-        args[0],
-        ok_exit,
-        success_level,
-        failure_level,
-        stdout_max_lines,
-        stderr_max_lines,
-    )
-    return ok, proc
 
 
 #
@@ -932,13 +735,6 @@ def create_mirrorlists(options: Options, tags: t.Sequence[Tag]) -> t.Tuple[bool,
 #
 
 
-def match_globlist(text: str, globlist: t.List[str]) -> bool:
-    """
-    Return True if `text` matches one of the globs in globlist.
-    """
-    return any(fnmatch.fnmatch(text, g) for g in globlist)
-
-
 def get_source_dest_opt(option: str) -> t.List[SrcDst]:
     """
     Parse a config option of the form
@@ -1258,7 +1054,7 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
     for tag in taglist:
         _log.info("----------------------------------------")
         _log.info("Starting tag %s", tag.name)
-        _log_ml(
+        log_ml(
             logging.DEBUG,
             "%s",
             format_tag(
@@ -1282,7 +1078,7 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
     # Report on the results
     successful_names = [it.name for it in successful]
     if successful:
-        _log_ml(
+        log_ml(
             logging.INFO,
             "%d tags succeeded:\n  %s",
             len(successful_names),
