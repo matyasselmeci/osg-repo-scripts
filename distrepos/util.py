@@ -5,7 +5,16 @@ import os
 import subprocess as sp
 import typing as t
 
-_debug = False
+from distrepos.error import ERR_RSYNC, ProgramError
+
+_debug = False  # TODO
+
+RSYNC_OK = 0
+RSYNC_NOT_FOUND = 23
+
+#
+# Functions for locking
+#
 
 
 def acquire_lock(lock_path: t.Union[str, os.PathLike]) -> t.Optional[t.IO]:
@@ -45,13 +54,6 @@ def release_lock(lock_fh: t.Optional[t.IO], lock_path: t.Optional[str]):
     lock_fh.close()
     if lock_path:
         os.unlink(lock_path)
-
-
-def match_globlist(text: str, globlist: t.List[str]) -> bool:
-    """
-    Return True if `text` matches one of the globs in globlist.
-    """
-    return any(fnmatch.fnmatch(text, g) for g in globlist)
 
 
 #
@@ -195,3 +197,104 @@ def run_with_log(
         log=log,
     )
     return ok, proc
+
+
+#
+# Wrappers around rsync
+#
+
+
+def rsync(
+    *args, log: t.Optional[logging.Logger] = None, **kwargs
+) -> t.Tuple[bool, sp.CompletedProcess]:
+    """
+    A wrapper around `subprocess.run` that runs rsync, capturing the output
+    and error, printing the command to be run if we're in debug mode.
+    Returns an (ok, CompletedProcess) tuple where ok is True if the return code is 0.
+    """
+    if not log:
+        log = logging.getLogger(__name__)
+    global _debug
+    kwargs.setdefault("stdout", sp.PIPE)
+    kwargs.setdefault("stderr", sp.PIPE)
+    kwargs.setdefault("encoding", "latin-1")
+    cmd = ["rsync"] + [str(x) for x in args]
+    if _debug:
+        log.debug("running %r %r", cmd, kwargs)
+    try:
+        proc = sp.run(cmd, **kwargs)
+    except OSError as err:
+        # This is usually caused by something like rsync not being found
+        raise ProgramError(ERR_RSYNC, f"Invoking rsync failed: {err}") from err
+    return proc.returncode == 0, proc
+
+
+def rsync_with_link(
+    source_url: str,
+    dest_path: t.Union[str, os.PathLike],
+    link_path: t.Union[None, str, os.PathLike],
+    recursive=True,
+    delete=True,
+    log: t.Optional[logging.Logger] = None,
+) -> t.Tuple[bool, sp.CompletedProcess]:
+    """
+    rsync from a remote URL sourcepath to the destination destpath, optionally
+    linking to files in linkpath.  recursive by default but this can be turned
+    off.
+    """
+    args = [
+        "--times",
+        "--stats",
+    ]
+    if delete:
+        args.append("--delete")
+    if recursive:
+        args.append("--recursive")
+    elif delete:
+        # rsync --delete errors out if neither --recursive nor --dirs are specified
+        args.append("--dirs")
+    if link_path and os.path.exists(link_path):
+        args.append(f"--link-dest={link_path}")
+    args += [
+        source_url,
+        dest_path,
+    ]
+    return rsync(*args, log=log)
+
+
+def log_rsync(
+    proc: sp.CompletedProcess,
+    description: str = "rsync",
+    success_level=logging.DEBUG,
+    failure_level=logging.ERROR,
+    not_found_is_ok=False,
+    log: t.Optional[logging.Logger] = None,
+):
+    """
+    log the result of an rsync() call.  The log level and message are based on
+    its success or failure (i.e., returncode == 0).  If not_found_is_ok is True,
+    then a source file not found (returncode == 23) is also considered ok.
+    """
+    ok_exit = [RSYNC_OK]
+    if not_found_is_ok:
+        ok_exit.append(RSYNC_NOT_FOUND)
+    return log_proc(
+        proc,
+        description=description,
+        ok_exit=ok_exit,
+        success_level=success_level,
+        failure_level=failure_level,
+        log=log,
+    )
+
+
+#
+# Misc
+#
+
+
+def match_globlist(text: str, globlist: t.List[str]) -> bool:
+    """
+    Return True if `text` matches one of the globs in globlist.
+    """
+    return any(fnmatch.fnmatch(text, g) for g in globlist)
