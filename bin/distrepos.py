@@ -26,7 +26,6 @@ separate repositories even though the files are mixed together.
 """
 
 import configparser
-from configparser import ConfigParser, ExtendedInterpolation
 import fcntl
 import fnmatch
 import logging
@@ -40,8 +39,8 @@ import sys
 import tempfile
 import typing as t
 from argparse import ArgumentParser, Namespace, RawDescriptionHelpFormatter
+from configparser import ConfigParser, ExtendedInterpolation
 from pathlib import Path
-
 
 MB = 1 << 20
 LOG_MAX_SIZE = 500 * MB
@@ -888,10 +887,10 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
     return True, ""
 
 
-
 #
 # Functions for dealing with the mirror list
 #
+
 
 def create_mirrorlists(options: Options, tags: t.Sequence[Tag]) -> t.Tuple[bool, str]:
     """
@@ -1094,7 +1093,9 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
             #     "Created section [%s] from [%s]", tag_section_name, tagset_section_name
             # )
         except configparser.DuplicateSectionError:
-            _log.debug("Skipping section [%s] because it already exists", tag_section_name)
+            _log.debug(
+                "Skipping section [%s] because it already exists", tag_section_name
+            )
             continue
         for key in tagset_section:
             if key == "dvers":
