@@ -57,7 +57,7 @@ RSYNC_NOT_FOUND = 23
 DEFAULT_CONFIG = "/etc/distrepos.conf"
 DEFAULT_CONDOR_RSYNC = "rsync://rsync.cs.wisc.edu/htcondor"
 DEFAULT_KOJI_RSYNC = "rsync://kojihub2000.chtc.wisc.edu/repos-dist"
-DEFAULT_DESTROOT = "/var/www/repo"
+DEFAULT_DESTROOT = "/usr/local/repo"
 DEFAULT_LOCK_DIR = "/var/lock/rsync_dist_repo"
 
 # These options are required to be present _and_ nonempty.  Some of them may
