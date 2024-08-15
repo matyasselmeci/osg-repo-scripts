@@ -24,6 +24,8 @@ COPY 99-tail-cron-logs.sh /etc/osg/image-init.d/
 # OSG scripts for repo maintenance
 COPY bin/* /usr/bin/
 
+COPY distrepos /usr/local/lib/python3.9/site-packages/distrepos
+
 # Data required for update_mashfiles.sh and rsyncd config
 COPY etc/ /etc/
 
