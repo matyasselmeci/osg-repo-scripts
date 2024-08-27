@@ -175,14 +175,20 @@ def _expand_tagset(config: ConfigParser, tagset_section_name: str):
             # interpolation when we read the 'tag' sections created from this
 
 
-def _get_taglist_from_config(
-    config: ConfigParser, tagnames: t.List[str]
-) -> t.List[Tag]:
+def get_taglist(args: Namespace, config: ConfigParser) -> t.List[Tag]:
     """
     Parse the 'tag' and 'tagset' sections in the config to return a list of Tag objects.
     This calls _expand_tagset to expand tagset sections, which may modify the config object.
-    If 'tagnames' is nonempty, limits the tags to only those named in tagnames.
+    If 'args.tags' is nonempty, limits the tags to only those named in args.tags.
+
+    Args:
+        args: command-line arguments parsed by argparse
+        config: ConfigParser configuration
+
+    Returns:
+        a list of Tag objects
     """
+    tagnames = args.tags
     taglist = []
 
     # First process tagsets; this needs to be in a separate loop because it creates
@@ -234,13 +240,31 @@ def parse_config(
     args: Namespace, config: ConfigParser
 ) -> t.Tuple[Options, t.List[Tag]]:
     """
-    Parse the config file and return the Distrepos object from the parameters.
+    Parse the config file and return the tag list and Options object from the parameters.
     Apply any overrides from the command-line.
     """
-    taglist = _get_taglist_from_config(config, args.tags)
+    taglist = get_taglist(args.tags, config)
     if not taglist:
         raise ConfigError("No (matching) [tag ...] or [tagset ...] sections found")
 
+    options = get_options(args, config)
+    return (
+        options,
+        taglist,
+    )
+
+
+def get_options(args: Namespace, config: ConfigParser) -> Options:
+    """
+    Build an Options object from the config and command-line arguments.
+
+    Args:
+        args: command-line arguments parsed by argparse
+        config: ConfigParser configuration
+
+    Returns:
+        an Options object
+    """
     if "options" not in config:
         raise ConfigError("Missing required section [options]")
     options_section = config["options"]
@@ -254,19 +278,17 @@ def parse_config(
         previous_root = options_section.get("previous_root", dest_root + ".previous")
     mirror_root = options_section.get("mirror_root", None)
     mirror_hosts = options_section.get("mirror_hosts", "").split()
-    return (
-        Options(
-            dest_root=Path(dest_root),
-            working_root=Path(working_root),
-            previous_root=Path(previous_root),
-            condor_rsync=options_section.get("condor_rsync", DEFAULT_CONDOR_RSYNC),
-            koji_rsync=options_section.get("koji_rsync", DEFAULT_KOJI_RSYNC),
-            lock_dir=Path(args.lock_dir) if args.lock_dir else None,
-            mirror_root=mirror_root,
-            mirror_hosts=mirror_hosts,
-        ),
-        taglist,
+    options = Options(
+        dest_root=Path(dest_root),
+        working_root=Path(working_root),
+        previous_root=Path(previous_root),
+        condor_rsync=options_section.get("condor_rsync", DEFAULT_CONDOR_RSYNC),
+        koji_rsync=options_section.get("koji_rsync", DEFAULT_KOJI_RSYNC),
+        lock_dir=Path(args.lock_dir) if args.lock_dir else None,
+        mirror_root=mirror_root,
+        mirror_hosts=mirror_hosts,
     )
+    return options
 
 
 def get_args(argv: t.List[str]) -> Namespace:
