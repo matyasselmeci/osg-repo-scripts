@@ -25,9 +25,7 @@ repo -- this is passed to `createrepo` to put the debuginfo and debugsource RPMs
 separate repositories even though the files are mixed together.
 """
 
-import configparser
 import logging
-import logging.handlers
 import os
 import sys
 import typing as t
@@ -40,9 +38,6 @@ from distrepos.error import ERR_EMPTY, ERR_FAILURES, ProgramError
 from distrepos.params import Options, Tag, format_tag, get_args, parse_config
 from distrepos.tag_run import run_one_tag
 from distrepos.util import acquire_lock, check_rsync, log_ml, release_lock
-
-MB = 1 << 20
-LOG_MAX_SIZE = 500 * MB
 
 _log = logging.getLogger(__name__)
 
@@ -88,35 +83,6 @@ def create_mirrorlists(options: Options, tags: t.Sequence[Tag]) -> t.Tuple[bool,
         release_lock(lock_fh, lock_path)
 
 
-def setup_logging(logfile: t.Optional[str], debug: bool) -> None:
-    """
-    Sets up logging, given an optional logfile.
-
-    Logs are written to a logfile if one is defined. In addition,
-    log to stderr if it's a tty.
-    """
-    loglevel = logging.DEBUG if debug else logging.INFO
-    _log.setLevel(loglevel)
-    if sys.stderr.isatty():
-        ch = logging.StreamHandler()
-        ch.setLevel(loglevel)
-        chformatter = logging.Formatter(">>>\t%(message)s")
-        ch.setFormatter(chformatter)
-        _log.addHandler(ch)
-    if logfile:
-        rfh = logging.handlers.RotatingFileHandler(
-            logfile,
-            maxBytes=LOG_MAX_SIZE,
-            backupCount=1,
-        )
-        rfh.setLevel(loglevel)
-        rfhformatter = logging.Formatter(
-            "%(asctime)s - %(levelname)s - %(message)s",
-        )
-        rfh.setFormatter(rfhformatter)
-        _log.addHandler(rfh)
-
-
 #
 # Main function
 #
@@ -135,19 +101,6 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
     config = ConfigParser(interpolation=ExtendedInterpolation())
     config.read(config_path)
 
-    if args.debug:
-        debug = True
-    else:
-        try:
-            debug = config.getboolean("options", "debug")
-        except configparser.Error:
-            debug = False
-
-    if args.logfile:
-        logfile = args.logfile
-    else:
-        logfile = config.get("options", "logfile", fallback="")
-    setup_logging(logfile, debug)
     options, taglist = parse_config(args, config)
 
     if args.print_tags:

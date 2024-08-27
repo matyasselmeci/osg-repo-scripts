@@ -1,8 +1,10 @@
 import configparser
 import logging
+import logging.handlers
 import os
 import re
 import string
+import sys
 import typing as t
 from argparse import ArgumentParser, Namespace, RawDescriptionHelpFormatter
 from configparser import ConfigParser
@@ -10,6 +12,9 @@ from pathlib import Path
 
 from distrepos.error import ConfigError, MissingOptionError
 from distrepos.util import match_globlist
+
+MB = 1 << 20
+LOG_MAX_SIZE = 500 * MB
 
 DEFAULT_CONDOR_RSYNC = "rsync://rsync.cs.wisc.edu/htcondor"
 DEFAULT_CONFIG = "/etc/distrepos.conf"
@@ -114,6 +119,36 @@ def get_source_dest_opt(option: str) -> t.List[SrcDst]:
         else:
             _log.warning("Skipping invalid source->dest line %r", line)
     return ret
+
+
+def setup_logging(logfile: t.Optional[str], debug: bool) -> None:
+    """
+    Sets up logging, given an optional logfile.
+
+    Logs are written to a logfile if one is defined. In addition,
+    log to stderr if it's a tty.
+    """
+    loglevel = logging.DEBUG if debug else logging.INFO
+    rootlog = logging.getLogger()
+    rootlog.setLevel(loglevel)
+    if sys.stderr.isatty():
+        ch = logging.StreamHandler()
+        ch.setLevel(loglevel)
+        chformatter = logging.Formatter(">>>\t%(message)s")
+        ch.setFormatter(chformatter)
+        rootlog.addHandler(ch)
+    if logfile:
+        rfh = logging.handlers.RotatingFileHandler(
+            logfile,
+            maxBytes=LOG_MAX_SIZE,
+            backupCount=1,
+        )
+        rfh.setLevel(loglevel)
+        rfhformatter = logging.Formatter(
+            "%(asctime)s - %(levelname)s - %(message)s",
+        )
+        rfh.setFormatter(rfhformatter)
+        rootlog.addHandler(rfh)
 
 
 def _expand_tagset(config: ConfigParser, tagset_section_name: str):
@@ -242,7 +277,22 @@ def parse_config(
     """
     Parse the config file and return the tag list and Options object from the parameters.
     Apply any overrides from the command-line.
+    Also set up logging.
     """
+    if args.debug:
+        debug = True
+    else:
+        try:
+            debug = config.getboolean("options", "debug")
+        except configparser.Error:
+            debug = False
+
+    if args.logfile:
+        logfile = args.logfile
+    else:
+        logfile = config.get("options", "logfile", fallback="")
+    setup_logging(logfile, debug)
+
     taglist = get_taglist(args.tags, config)
     if not taglist:
         raise ConfigError("No (matching) [tag ...] or [tagset ...] sections found")
@@ -346,3 +396,4 @@ def get_args(argv: t.List[str]) -> Namespace:
     )
     args = parser.parse_args(argv[1:])
     return args
+
