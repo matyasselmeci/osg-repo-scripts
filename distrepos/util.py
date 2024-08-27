@@ -7,7 +7,6 @@ import typing as t
 
 from distrepos.error import ERR_RSYNC, ProgramError
 
-
 RSYNC_OK = 0
 RSYNC_NOT_FOUND = 23
 
@@ -146,7 +145,7 @@ def log_proc(
     outerr_s = "\n".join(outerr)
     log.log(
         level,
-        f"%s %s with exit code %d\n%s",
+        "%s %s with exit code %d\n%s",
         description,
         "succeeded" if ok else "failed",
         proc.returncode,

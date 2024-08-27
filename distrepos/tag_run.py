@@ -142,7 +142,7 @@ def pull_condor_repos(options: Options, tag: Tag):
             # Finally pull the SRPMs -- these are identical between arches so only
             # pull if we're on the first arch.
             if idx == 0:
-                description = f"rsync from condor repo for source RPMs"
+                description = "rsync from condor repo for source RPMs"
                 ok, proc = rsync_with_link(
                     source_rpms_src + "*.rpm",
                     source_rpms_dst,
@@ -208,7 +208,6 @@ def update_pkglist_files(working_path: Path, arches: t.List[str]):
             with open(f"{arch_pkglist}.new", "wt") as new_pkglist_fh, open(
                 f"{arch_debug_pkglist}.new", "wt"
             ) as new_debug_pkglist_fh:
-
                 # Walk the Packages directory tree and add the relative paths to the RPMs
                 # (relative from src_dir) to the appropriate pkglist file.
                 # Using os.walk() because Path.walk() is not available in Python 3.6
