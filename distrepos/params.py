@@ -293,7 +293,7 @@ def parse_config(
         logfile = config.get("options", "logfile", fallback="")
     setup_logging(logfile, debug)
 
-    taglist = get_taglist(args.tags, config)
+    taglist = get_taglist(args, config)
     if not taglist:
         raise ConfigError("No (matching) [tag ...] or [tagset ...] sections found")
 
