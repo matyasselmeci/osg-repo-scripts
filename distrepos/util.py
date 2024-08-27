@@ -15,27 +15,37 @@ RSYNC_NOT_FOUND = 23
 #
 
 
-def acquire_lock(lock_path: t.Union[str, os.PathLike]) -> t.Optional[t.IO]:
+def acquire_lock(lock_path: t.Union[str, os.PathLike], make_parents: bool=True) -> t.Optional[t.IO]:
     """
     Create and return the handle to a lockfile
 
     Args:
         lock_path: The path to the lockfile to create; the directory must
             already exist.
+        make_parents: Whether to make the parent directories of the lockfile
 
     Returns: A filehandle to be used with release_lock(), or None if we were
         unable to acquire the lock.
     """
-    filehandle = open(lock_path, "w")
-    filedescriptor = filehandle.fileno()
-    # Get an exclusive lock on the file (LOCK_EX) in non-blocking mode
-    # (LOCK_NB), which causes the operation to raise IOError if some other
-    # process already has the lock
+    log = logging.getLogger(__name__)
     try:
-        fcntl.flock(filedescriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+        if make_parents:
+            os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        filehandle = open(lock_path, "w")
+        filedescriptor = filehandle.fileno()
+        # Get an exclusive lock on the file (LOCK_EX) in non-blocking mode
+        # (LOCK_NB), which causes the operation to raise IOError if some other
+        # process already has the lock
+        try:
+            fcntl.flock(filedescriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return filehandle
+        except BlockingIOError:
+            log.error("%s", "Another run in progress (unable to lock file %s)", lock_path)
+            return None
+    except OSError as err:
+        log.error("OSError creating lockfile at %s: %s", lock_path, err)
+        log.debug("Traceback follows", exc_info=True)
         return None
-    return filehandle
 
 
 def release_lock(lock_fh: t.Optional[t.IO], lock_path: t.Optional[str]):

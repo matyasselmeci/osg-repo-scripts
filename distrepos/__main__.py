@@ -26,7 +26,6 @@ separate repositories even though the files are mixed together.
 """
 
 import logging
-import os
 import sys
 import typing as t
 from configparser import (
@@ -64,18 +63,9 @@ def create_mirrorlists(options: Options, tags: t.Sequence[Tag]) -> t.Tuple[bool,
     lock_path = ""
     if options.lock_dir:
         lock_path = options.lock_dir / "mirrors"
-        try:
-            os.makedirs(options.lock_dir, exist_ok=True)
-            lock_fh = acquire_lock(lock_path)
-        except OSError as err:
-            msg = f"OSError creating lockfile at {lock_path}, {err}"
-            _log.error("%s", msg)
-            _log.debug("Traceback follows", exc_info=True)
-            return False, msg
+        lock_fh = acquire_lock(lock_path)
         if not lock_fh:
-            msg = f"Another run in progress (unable to lock file {lock_path})"
-            _log.error("%s", msg)
-            return False, msg
+            return False, f"Could not lock {lock_path}"
 
     try:
         pass  # TODO I am here

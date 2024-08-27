@@ -403,18 +403,9 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
     lock_path = ""
     if options.lock_dir:
         lock_path = options.lock_dir / tag.name
-        try:
-            os.makedirs(options.lock_dir, exist_ok=True)
-            lock_fh = acquire_lock(lock_path)
-        except OSError as err:
-            msg = f"OSError creating lockfile at {lock_path}, {err}"
-            _log.error("%s", msg)
-            _log.debug("Traceback follows", exc_info=True)
-            return False, msg
+        lock_fh = acquire_lock(lock_path)
         if not lock_fh:
-            msg = f"Another run in progress (unable to lock file {lock_path})"
-            _log.error("%s", msg)
-            return False, msg
+            return False, f"Could not lock {lock_path}"
 
     # Run the various steps
     try:
@@ -434,7 +425,7 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
         )
     except TagFailure as err:
         _log.error("Tag %s failed: %s", tag.name, err)
-        _log.error("Traceback follows", exc_info=True)
+        _log.debug("Traceback follows", exc_info=True)
         return False, str(err)
     finally:
         # Release the lock
