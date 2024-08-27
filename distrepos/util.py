@@ -7,7 +7,6 @@ import typing as t
 
 from distrepos.error import ERR_RSYNC, ProgramError
 
-_debug = False  # TODO
 
 RSYNC_OK = 0
 RSYNC_NOT_FOUND = 23
@@ -171,8 +170,6 @@ def run_with_log(
 
     See Also: log_proc()
     """
-    global _debug
-
     if isinstance(ok_exit, int):
         ok_exit = [ok_exit]
     if not log:
@@ -181,8 +178,7 @@ def run_with_log(
     kwargs.setdefault("stderr", sp.PIPE)
     kwargs.setdefault("encoding", "latin-1")
 
-    if _debug:
-        log.debug("running %r %r", args, kwargs)
+    log.debug("running %r %r", args, kwargs)
 
     proc = sp.run(*args, **kwargs)
     ok = proc.returncode in ok_exit
@@ -214,13 +210,11 @@ def rsync(
     """
     if not log:
         log = logging.getLogger(__name__)
-    global _debug
     kwargs.setdefault("stdout", sp.PIPE)
     kwargs.setdefault("stderr", sp.PIPE)
     kwargs.setdefault("encoding", "latin-1")
     cmd = ["rsync"] + [str(x) for x in args]
-    if _debug:
-        log.debug("running %r %r", cmd, kwargs)
+    log.debug("running %r %r", cmd, kwargs)
     try:
         proc = sp.run(cmd, **kwargs)
     except OSError as err:
