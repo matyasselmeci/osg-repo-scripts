@@ -44,7 +44,6 @@ from distrepos.util import acquire_lock, check_rsync, log_ml, release_lock
 MB = 1 << 20
 LOG_MAX_SIZE = 500 * MB
 
-_debug = False  # TODO: Handle this in other modules
 _log = logging.getLogger(__name__)
 
 
@@ -75,7 +74,8 @@ def create_mirrorlists(options: Options, tags: t.Sequence[Tag]) -> t.Tuple[bool,
             lock_fh = acquire_lock(lock_path)
         except OSError as err:
             msg = f"OSError creating lockfile at {lock_path}, {err}"
-            _log.error("%s", msg, exc_info=_debug)
+            _log.error("%s", msg)
+            _log.debug("Traceback follows", exc_info=True)
             return False, msg
         if not lock_fh:
             msg = f"Another run in progress (unable to lock file {lock_path})"
@@ -83,19 +83,19 @@ def create_mirrorlists(options: Options, tags: t.Sequence[Tag]) -> t.Tuple[bool,
             return False, msg
 
     try:
-        pass
+        pass  # TODO I am here
     finally:
         release_lock(lock_fh, lock_path)
 
 
-def setup_logging(logfile: t.Optional[str]) -> None:
+def setup_logging(logfile: t.Optional[str], debug: bool) -> None:
     """
     Sets up logging, given an optional logfile.
 
     Logs are written to a logfile if one is defined. In addition,
     log to stderr if it's a tty.
     """
-    loglevel = logging.DEBUG if _debug else logging.INFO
+    loglevel = logging.DEBUG if debug else logging.INFO
     _log.setLevel(loglevel)
     if sys.stderr.isatty():
         ch = logging.StreamHandler()
@@ -130,26 +130,24 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
     Return the exit code of the program.  Success (0) is if at least one tag succeeded
     and no tags failed.
     """
-    global _debug
-
     args = get_args(argv or sys.argv)
     config_path: str = args.config
     config = ConfigParser(interpolation=ExtendedInterpolation())
     config.read(config_path)
 
     if args.debug:
-        _debug = True
+        debug = True
     else:
         try:
-            _debug = config.getboolean("options", "debug")
+            debug = config.getboolean("options", "debug")
         except configparser.Error:
-            _debug = False
+            debug = False
 
     if args.logfile:
         logfile = args.logfile
     else:
         logfile = config.get("options", "logfile", fallback="")
-    setup_logging(logfile)
+    setup_logging(logfile, debug)
     options, taglist = parse_config(args, config)
 
     if args.print_tags:
@@ -220,5 +218,6 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except ProgramError as e:
-        _log.error("%s", e, exc_info=_debug)
+        _log.error("%s", e)
+        _log.debug("Traceback follows", exc_info=True)
         sys.exit(e.returncode)
