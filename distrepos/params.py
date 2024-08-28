@@ -396,4 +396,3 @@ def get_args(argv: t.List[str]) -> Namespace:
     )
     args = parser.parse_args(argv[1:])
     return args
-

@@ -15,7 +15,9 @@ RSYNC_NOT_FOUND = 23
 #
 
 
-def acquire_lock(lock_path: t.Union[str, os.PathLike], make_parents: bool=True) -> t.Optional[t.IO]:
+def acquire_lock(
+    lock_path: t.Union[str, os.PathLike], make_parents: bool = True
+) -> t.Optional[t.IO]:
     """
     Create and return the handle to a lockfile
 
@@ -40,7 +42,9 @@ def acquire_lock(lock_path: t.Union[str, os.PathLike], make_parents: bool=True) 
             fcntl.flock(filedescriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return filehandle
         except BlockingIOError:
-            log.error("%s", "Another run in progress (unable to lock file %s)", lock_path)
+            log.error(
+                "%s", "Another run in progress (unable to lock file %s)", lock_path
+            )
             return None
     except OSError as err:
         log.error("OSError creating lockfile at %s: %s", lock_path, err)
