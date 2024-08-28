@@ -114,7 +114,7 @@ def log_proc(
     failure_level=logging.ERROR,
     stdout_max_lines=24,
     stderr_max_lines=40,
-    log=t.Optional[logging.Logger],
+    log: t.Optional[logging.Logger] = None,
 ) -> None:
     """
     Print the result of a process in the log; the loglevel is determined by
@@ -170,7 +170,7 @@ def run_with_log(
     failure_level=logging.ERROR,
     stdout_max_lines=24,
     stderr_max_lines=40,
-    log=t.Optional[logging.Logger],
+    log: t.Optional[logging.Logger] = None,
     **kwargs,
 ) -> t.Tuple[bool, sp.CompletedProcess]:
     """
