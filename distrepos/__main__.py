@@ -2,7 +2,8 @@
 """
 This script rsyncs repos created with "koji dist-repo" and combines them with
 other external repos (such as the htcondor repo), then updates the repo
-definition files.  The list of repositories is pulled from a config file.
+definition files.  The list of repositories is pulled from distrepos.conf;
+see the comments in that file for the format.
 
 The mash-created repo layout looks like
     source/SRPMS/{*.src.rpm,repodata/,repoview/}
