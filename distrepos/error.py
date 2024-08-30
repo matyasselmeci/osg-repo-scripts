@@ -1,3 +1,7 @@
+"""
+Error handling constants and exception classes for distrepos.
+"""
+
 #
 # Exit codes
 #
@@ -21,6 +25,16 @@ class ProgramError(RuntimeError):
     def __init__(self, returncode, *args):
         super().__init__(*args)
         self.returncode = returncode
+
+
+class RsyncError(ProgramError):
+    """Class for fatal errors with rsync"""
+
+    def __init__(self, *args):
+        super().__init__(ERR_RSYNC, *args)
+
+    def __str__(self):
+        return f"rsync error: {super().__str__()}"
 
 
 class ConfigError(ProgramError):

@@ -1,3 +1,8 @@
+"""
+This module contains the functions for handling a single tag.
+The main entry point is run_one_tag(); other functions are helpers.
+"""
+
 import logging
 import os
 import shutil
@@ -51,8 +56,8 @@ def get_koji_latest_dir(koji_rsync: str, tagdir: str) -> str:
                 )
             else:
                 raise TagFailure("Error getting 'latest' dir")
-        # we have copied the "latest" symlink as a (now broken) symlink. Read the text of the link to get
-        # the directory on the remote side.
+        # we have copied the "latest" symlink as a (now broken) symlink. Read the text
+        # of the link to get the directory on the remote side.
         return os.path.basename(os.readlink(destpath))
 
 

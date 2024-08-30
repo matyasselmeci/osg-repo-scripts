@@ -29,10 +29,8 @@ separate repositories even though the files are mixed together.
 import logging
 import sys
 import typing as t
-from configparser import (
-    ConfigParser,  # TODO We shouldn't need these
-    ExtendedInterpolation,
-)
+from configparser import ConfigParser  # TODO We shouldn't need these
+from configparser import ExtendedInterpolation
 
 from distrepos.error import ERR_EMPTY, ERR_FAILURES, ProgramError
 from distrepos.params import Options, Tag, format_tag, get_args, parse_config
@@ -47,6 +45,7 @@ _log = logging.getLogger(__name__)
 #
 
 
+# TODO Not implemented
 def create_mirrorlists(options: Options, tags: t.Sequence[Tag]) -> t.Tuple[bool, str]:
     """
     Create the files used for mirror lists
@@ -69,7 +68,7 @@ def create_mirrorlists(options: Options, tags: t.Sequence[Tag]) -> t.Tuple[bool,
             return False, f"Could not lock {lock_path}"
 
     try:
-        pass  # TODO I am here
+        raise NotImplementedError()  # TODO I am here
     finally:
         release_lock(lock_fh, lock_path)
 
@@ -81,8 +80,10 @@ def create_mirrorlists(options: Options, tags: t.Sequence[Tag]) -> t.Tuple[bool,
 
 def main(argv: t.Optional[t.List[str]] = None) -> int:
     """
-    Main function. Parse arguments and config; set up logging and the parameters
-    for each run, then launch the run.
+    Main function.   Call the functions to parse arguments and config,
+    and set up logging and the parameters for each run.
+    If --print-tags is specified, only print the tag definitions that were
+    parsed from the config file; otherwise, do the run.
 
     Return the exit code of the program.  Success (0) is if at least one tag succeeded
     and no tags failed.
@@ -107,10 +108,14 @@ def main(argv: t.Optional[t.List[str]] = None) -> int:
             print("------")
         return 0
 
+    # First check that koji hub is even reachable.  If not, there is no point
+    # in proceeding further.
     _log.info("Program started")
     check_rsync(options.koji_rsync)
     _log.info("rsync check successful. Starting run for %d tags", len(taglist))
 
+    # Run each tag defined in the config file.  Tags are run in series.
+    # Keep track of successes and failures.
     successful = []
     failed = []
     for tag in taglist:

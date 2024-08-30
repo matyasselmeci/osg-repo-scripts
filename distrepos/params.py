@@ -1,3 +1,8 @@
+"""
+Reads the config file and command-line arguments; sets up logging, the
+global Options, and the parameters for each Tag.
+"""
+
 import configparser
 import logging
 import logging.handlers
@@ -31,7 +36,9 @@ _log = logging.getLogger(__name__)
 
 
 class SrcDst(t.NamedTuple):
-    """A source/destination pair"""
+    """
+    A source/destination pair, used for the definitions of external repos.
+    """
 
     src: str
     dst: str

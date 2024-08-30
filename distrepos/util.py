@@ -1,3 +1,7 @@
+"""
+Utilities used in distrepos
+"""
+
 import fcntl
 import fnmatch
 import logging
@@ -5,7 +9,7 @@ import os
 import subprocess as sp
 import typing as t
 
-from distrepos.error import ERR_RSYNC, ProgramError
+from distrepos.error import RsyncError
 
 RSYNC_OK = 0
 RSYNC_NOT_FOUND = 23
@@ -232,7 +236,7 @@ def rsync(
         proc = sp.run(cmd, **kwargs)
     except OSError as err:
         # This is usually caused by something like rsync not being found
-        raise ProgramError(ERR_RSYNC, f"Invoking rsync failed: {err}") from err
+        raise RsyncError(f"Invocation failed: {err}") from err
     return proc.returncode == 0, proc
 
 
@@ -319,9 +323,7 @@ def check_rsync(koji_rsync: str, log: t.Optional[logging.Logger] = None) -> None
         ok, proc = rsync("--list-only", koji_rsync, timeout=180, log=log)
     except sp.TimeoutExpired:
         log.critical(f"{description} timed out")
-        raise ProgramError(
-            ERR_RSYNC, "rsync dir listing from koji-hub timed out, cannot continue"
-        )
+        raise RsyncError("rsync dir listing from koji-hub timed out, cannot continue")
     log_rsync(
         proc,
         description,
@@ -329,6 +331,4 @@ def check_rsync(koji_rsync: str, log: t.Optional[logging.Logger] = None) -> None
         log=log,
     )
     if not ok:
-        raise ProgramError(
-            ERR_RSYNC, "rsync dir listing from koji-hub failed, cannot continue"
-        )
+        raise RsyncError("rsync dir listing from koji-hub failed, cannot continue")
