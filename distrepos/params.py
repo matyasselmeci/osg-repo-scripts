@@ -41,6 +41,11 @@ class SrcDst(t.NamedTuple):
 
 
 class Tag(t.NamedTuple):
+    """
+    Parameters for a single tag run based on the [tag] and [tagset] sections
+    of the config file.
+    """
+
     name: str
     source: str
     dest: str
@@ -52,7 +57,10 @@ class Tag(t.NamedTuple):
 
 
 class Options(t.NamedTuple):
-    # TODO docstring
+    """
+    Global options that apply to all tag runs.
+    """
+
     dest_root: Path
     working_root: Path
     previous_root: Path
