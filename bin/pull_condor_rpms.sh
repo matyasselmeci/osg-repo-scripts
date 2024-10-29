@@ -53,10 +53,6 @@ case $TAG in
   * ) usage ;;
 esac
 
-if [[ $SERIES == 24 ]]; then
-    tag_not_supported  # Condor 24 isn't released yet
-fi
-
 # branch "upcoming" corresponds to SERIES.x in htcondor, "main" corresponds to SERIES.0
 # others do not have a corresponding series
 case $BRANCH in
