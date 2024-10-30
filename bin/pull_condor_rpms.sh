@@ -76,6 +76,7 @@ esac
 
 mkdir -p $CURRENT_REPO_DIR
 
+ANY_SUCCESS=2
 for CONDOR_REPO in "${CONDOR_REPOS[@]}"; do
   RSYNC_DIR_URL="$RSYNC_ROOT/$CONDOR_SERIES/$DVER/$ARCH/$CONDOR_REPO/$SOURCE_SET"
   RSYNC_URL="$RSYNC_DIR_URL*.rpm"
@@ -92,7 +93,7 @@ for CONDOR_REPO in "${CONDOR_REPOS[@]}"; do
     exit 1
   elif [[ $file_count == 0 ]]; then
     echo "Directory listing for $RSYNC_URL returned no files. Nothing to do."
-    exit 2
+    continue
   fi
 
   rsync --times $RSYNC_URL $NEW_REPO_DIR --link-dest $CURRENT_REPO_DIR
@@ -101,4 +102,7 @@ for CONDOR_REPO in "${CONDOR_REPOS[@]}"; do
     echo "Unable to retrieve htcondor packages for $RSYNC_URL: rsync failed with exit code $ret"
     exit 1
   fi
+  ANY_SUCCESS=0
 done
+
+exit $ANY_SUCCESS
