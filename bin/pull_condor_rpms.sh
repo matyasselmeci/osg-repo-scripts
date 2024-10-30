@@ -67,7 +67,7 @@ esac
 # development -> daily
 case $REPO in
     release ) CONDOR_REPOS=(release) ;;
-    testing ) CONDOR_REPOS=(release update) ;;
+    testing ) CONDOR_REPOS=(update release) ;;
     development ) CONDOR_REPOS=(daily) ;;
     * ) repo_not_supported $REPO ;;
 esac
