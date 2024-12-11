@@ -76,6 +76,24 @@ def mkarchurl(host,tag,arch):
     series,dver,repo = tagsplit(tag)
     return '/'.join([host,'osg',series,dver,repo,arch])
 
+
+def is_migrated(url):
+    # type: (str) -> bool
+    """
+    Check if the repo is using the el9/distrepos repo layout, which has a
+    list of RPMs in a pkglist file.
+    """
+    pkglist_url = url + "/pkglist"
+    log("checking: " + pkglist_url)
+    try:
+        response = urllib2.urlopen(pkglist_url, timeout=10)
+        if response.code == 200:
+            return True
+    except EnvironmentError:
+        pass
+    return False
+
+
 def test(hosts,tag,arch):
     # always include repo.opensciencegrid.org in list
     list = [mkarchurl('https://'+hostname,tag,arch)]
@@ -106,6 +124,9 @@ def test(hosts,tag,arch):
             mirrorhosts.remove(host)
         except Exception, e:
             log("\tException caught while processing url:"+url+" "+str(e))
+        if is_migrated(url):
+            log("\tExcluding url " + url + " because it is using the EL9 layout")
+            mirrorhosts.remove(host)
 
     return list
 
