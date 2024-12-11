@@ -94,6 +94,10 @@ def update_mirrors_for_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
 
     mirror_hostnames = get_baseline_urls() + options.mirror_hosts
 
+    working_path = Path(options.mirror_working_root) / tag.dest
+    prev_path = Path(options.mirror_prev_root) / tag.dest
+    dest_path = Path(options.mirror_root) / tag.dest
+
     for arch in tag.arches:
         good_mirrors = []
         for hostname in mirror_hostnames:
@@ -104,18 +108,15 @@ def update_mirrors_for_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
 
         # TODO is it a failure if no mirrors are found outside of osg-hosted repos? Assume no
         if not good_mirrors:
-            return False, f"No good mirrors found for tag {tag.name}"
+            return False, f"No good mirrors found for tag {tag.name}, arch {arch}"
 
-    working_path = Path(options.mirror_working_root) / tag.dest
-    prev_path = Path(options.mirror_prev_root) / tag.dest
-    dest_path = Path(options.mirror_root) / tag.dest
 
-    _log.info(f"Writing working mirror file {working_path}")
-    # ensure the output path exists
-    working_path.parent.mkdir(parents=True, exist_ok=True)
+        _log.info(f"Writing working mirror file {working_path}")
+        # ensure the output path exists
+        working_path.mkdir(parents=True, exist_ok=True)
 
-    with open(working_path, 'w') as mirrorf:
-        mirrorf.write('\n'.join(good_mirrors))
+        with open(working_path / arch, 'w') as mirrorf:
+            mirrorf.write('\n'.join(good_mirrors))
 
     update_release_repos(dest_path, working_path, prev_path)
 
