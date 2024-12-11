@@ -26,6 +26,7 @@ repo -- this is passed to `createrepo` to put the debuginfo and debugsource RPMs
 separate repositories even though the files are mixed together.
 """
 
+import datetime
 import logging
 import sys
 import typing as t
@@ -127,6 +128,7 @@ def rsync_repos(options: Options, tags: t.Sequence[Tag]) -> int:
     _log.info("Program started")
     check_rsync(options.koji_rsync)
     _log.info("rsync check successful. Starting run for %d tags", len(tags))
+    total_start_time = datetime.datetime.now()
 
     # Run each tag defined in the config file.  Tags are run in series.
     # Keep track of successes and failures.
@@ -145,16 +147,19 @@ def rsync_repos(options: Options, tags: t.Sequence[Tag]) -> int:
                 destroot=options.dest_root,
             ),
         )
+        tag_start_time = datetime.datetime.now()
         ok, err = run_one_tag(options, tag)
+        tag_elapsed_time = datetime.datetime.now() - tag_start_time
         if ok:
-            _log.info("Tag %s completed", tag.name)
+            _log.info("Tag %s completed in %s", tag.name, tag_elapsed_time)
             successful.append(tag)
         else:
-            _log.error("Tag %s failed", tag.name)
+            _log.error("Tag %s failed in %s", tag.name, tag_elapsed_time)
             failed.append((tag, err))
 
+    total_elapsed_time = datetime.datetime.now() - total_start_time
     _log.info("----------------------------------------")
-    _log.info("Run completed")
+    _log.info("Run completed in %s", total_elapsed_time)
 
     # Report on the results
     successful_names = [it.name for it in successful]
