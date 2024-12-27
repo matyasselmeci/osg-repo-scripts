@@ -45,6 +45,30 @@ def get_mirror_info_for_arch(hostname: str, tag: Tag, arch: str) -> t.Tuple[str,
     return mirror_base, repomd_url
 
 
+def is_migrated(repomd_url: str) -> bool:
+    """
+    Given the URL of a repomd file, check if the repo that owns that file
+    has been migrated to the distrepos format.  This is true if they have
+    a file named "pkglist" as a sibling of the "repodata" folder (which is
+    the parent of the "repomd.xml" file.
+
+    Args:
+        repomd_url: The URL of a repomd.xml file
+
+    Returns: True if the repo is in the distrepos format.
+    """
+    pkglist_url = os.path.dirname(os.path.dirname(repomd_url)) + "/pkglist"
+    _log.info(f"Checking for mirror format based on {pkglist_url}")
+    response = requests.get(pkglist_url, timeout=10)
+    if response.status_code == 404:
+        _log.info(f"pkglist file not found; repo probably not migrated")
+        return False
+    elif response.status_code != 200:
+        _log.warning(f"unexpected response.code for pkglist file {pkglist_url}: {response.status_code}")
+        return False
+    return True
+
+
 def test_single_mirror(repodata_url: str) -> bool:
     """
     Given the full URL of a repodata/repomd.xml that might mirror a tag, return whether
@@ -75,8 +99,12 @@ def test_single_mirror(repodata_url: str) -> bool:
             )
             return False
         else:
-            _log.debug(f"Mirror {repodata_url} all good")
-            return True
+            if is_migrated(repodata_url):
+                _log.debug(f"Mirror {repodata_url} all good")
+                return True
+            else:
+                _log.debug(f"Mirror {repodata_url} not migrated")
+                return False
 
 
 def update_mirrors_for_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
@@ -116,7 +144,7 @@ def update_mirrors_for_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
         working_path.mkdir(parents=True, exist_ok=True)
 
         with open(working_path / arch, 'w') as mirrorf:
-            mirrorf.write('\n'.join(good_mirrors))
+            mirrorf.write('\n'.join(good_mirrors) + '\n')
 
     update_release_repos(dest_path, working_path, prev_path)
 
