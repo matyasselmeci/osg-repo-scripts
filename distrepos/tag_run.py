@@ -280,6 +280,8 @@ def run_createrepo(working_path: Path, arches: t.List[str]):
     ok, proc = run_with_log(["createrepo_c", '--update', str(src_dir), f"--pkglist={src_pkglist}"])
     description = "running createrepo on SRPMs"
     if ok:
+        repomd = src_dir / "repodata/repomd.xml"
+        repomd.touch()
         _log.info("%s ok", description)
     else:
         raise TagFailure(f"Error {description}")
@@ -293,6 +295,8 @@ def run_createrepo(working_path: Path, arches: t.List[str]):
         )
         description = f"running createrepo on {arch} rpms"
         if ok:
+            repomd = arch_dir / "repodata/repomd.xml"
+            repomd.touch()
             _log.info("%s ok", description)
         else:
             raise TagFailure(f"Error {description}")
@@ -306,6 +310,8 @@ def run_createrepo(working_path: Path, arches: t.List[str]):
         )
         description = f"running createrepo on {arch} debuginfo rpms"
         if ok:
+            repomd = arch_debug_dir / "repodata/repomd.xml"
+            repomd.touch()
             _log.info("%s ok", description)
         else:
             raise TagFailure(f"Error {description}")
@@ -346,9 +352,12 @@ def update_release_repos(release_path: Path, working_path: Path, previous_path: 
         raise TagFailure(failmsg)
 
     # If we have an old previous path, clear it; also make sure its parents exist.
-    if previous_path.exists():
+    if os.path.lexists(previous_path):
         try:
-            shutil.rmtree(previous_path)
+            if previous_path.is_dir():
+                shutil.rmtree(previous_path)
+            else:
+                previous_path.unlink()
         except OSError as err:
             _log.error(
                 "OSError clearing previous dir %s: %s",
@@ -361,7 +370,7 @@ def update_release_repos(release_path: Path, working_path: Path, previous_path: 
 
     # If we already have something in the release path, move it to the previous path.
     # Also create the parent dirs if necessary.
-    if release_path.exists():
+    if os.path.lexists(release_path):
         try:
             shutil.move(release_path, previous_path)
         except OSError as err:
@@ -387,7 +396,7 @@ def update_release_repos(release_path: Path, working_path: Path, previous_path: 
         )
         _log.debug("Traceback follows", exc_info=True)
         # Something failed. Undo, undo!
-        if previous_path.exists():
+        if os.path.lexists(previous_path):
             try:
                 shutil.move(previous_path, release_path)
             except OSError as err2:
