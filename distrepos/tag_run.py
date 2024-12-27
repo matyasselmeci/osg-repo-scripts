@@ -280,6 +280,8 @@ def run_createrepo(working_path: Path, arches: t.List[str]):
     ok, proc = run_with_log(["createrepo_c", '--update', str(src_dir), f"--pkglist={src_pkglist}"])
     description = "running createrepo on SRPMs"
     if ok:
+        repomd = src_dir / "repodata/repomd.xml"
+        repomd.touch()
         _log.info("%s ok", description)
     else:
         raise TagFailure(f"Error {description}")
@@ -293,6 +295,8 @@ def run_createrepo(working_path: Path, arches: t.List[str]):
         )
         description = f"running createrepo on {arch} rpms"
         if ok:
+            repomd = arch_dir / "repodata/repomd.xml"
+            repomd.touch()
             _log.info("%s ok", description)
         else:
             raise TagFailure(f"Error {description}")
@@ -306,6 +310,8 @@ def run_createrepo(working_path: Path, arches: t.List[str]):
         )
         description = f"running createrepo on {arch} debuginfo rpms"
         if ok:
+            repomd = arch_debug_dir / "repodata/repomd.xml"
+            repomd.touch()
             _log.info("%s ok", description)
         else:
             raise TagFailure(f"Error {description}")
