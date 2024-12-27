@@ -144,7 +144,7 @@ def update_mirrors_for_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
         working_path.mkdir(parents=True, exist_ok=True)
 
         with open(working_path / arch, 'w') as mirrorf:
-            mirrorf.write('\n'.join(good_mirrors))
+            mirrorf.write('\n'.join(good_mirrors) + '\n')
 
     update_release_repos(dest_path, working_path, prev_path)
 
