@@ -22,6 +22,7 @@ COPY 99-tail-cron-logs.sh /etc/osg/image-init.d/
 
 # OSG scripts for repo maintenance
 COPY bin/* /usr/bin/
+COPY migrate.py /usr/bin/migrate.py
 
 COPY distrepos /usr/local/lib/python3.9/site-packages/distrepos
 
