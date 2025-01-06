@@ -269,7 +269,7 @@ def get_args(argv):
 
     args = parser.parse_args(argv[1:])
     if not args.actions:
-        args.action = all_actions
+        args.actions = all_actions
     return args
 
 
