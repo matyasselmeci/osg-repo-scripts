@@ -270,6 +270,7 @@ def rsync_with_link(
     link_path: t.Union[None, str, os.PathLike],
     recursive=True,
     delete=True,
+    links=False,
     log: t.Optional[logging.Logger] = None,
 ) -> t.Tuple[bool, sp.CompletedProcess]:
     """
@@ -288,6 +289,9 @@ def rsync_with_link(
     elif delete:
         # rsync --delete errors out if neither --recursive nor --dirs are specified
         args.append("--dirs")
+    # copy symlinks (only if they point to other parts of the tree)
+    if links:
+        args += ["--links", "--safe-links"]
     if link_path and os.path.exists(link_path):
         args.append(f"--link-dest={link_path}")
     args += [
