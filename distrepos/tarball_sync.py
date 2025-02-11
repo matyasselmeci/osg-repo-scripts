@@ -20,7 +20,7 @@ def tarball_sync(options: Options) -> Tuple[bool, str]:
     dest_dir = Path(options.dest_root) / options.tarball_install
 
     description = f"rsync from tarball repo"
-    ok, proc = rsync_with_link(tarball_rsync, working_dir, dest_dir)
+    ok, proc = rsync_with_link(tarball_rsync, working_dir, dest_dir, links=True)
     log_rsync(proc, description)
     if ok:
         _log.info("%s ok", description)
