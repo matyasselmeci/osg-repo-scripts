@@ -89,12 +89,15 @@ def create_latest_symlinks(options: Options) -> Tuple[bool, str]:
             # Find the most recent tarball for each os version, sorted by OS
             oses = set(i.os for i in infos)
             for os in oses:
-                latest_symlink = series_dir / f"{WN_TARBALL_NAME_PREFIX}.{os}.{arch}.tar.gz"
+                latest_symlink: Path = series_dir / f"{WN_TARBALL_NAME_PREFIX}.{os}.{arch}.tar.gz"
                 os_tarballs = [i for i in infos if i.os == os]
                 os_tarballs.sort(key=lambda i: i.date_string, reverse=True)
                 latest_os_tarball = os_tarballs[0].full_path
 
-                latest_symlink.symlink_to(latest_os_tarball.relative_to(series_dir))
+                latest_symlink_target = latest_os_tarball.relative_to(series_dir)
+                if latest_symlink.resolve() != latest_symlink_target:
+                    latest_symlink.unlink(missing_ok=True)
+                    latest_symlink.symlink_to(latest_symlink_target)
     
     return True, ""
 
