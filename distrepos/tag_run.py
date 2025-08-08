@@ -322,6 +322,7 @@ def create_arches_symlinks(options: Options, working_path: Path, arches: t.List[
     in `options.arch_mapping`. Ensures compatibility between systems with different
     names for similar arches (eg. x86_64_v2 in koji and x86_64 on some destination hosts)
     """
+    _log.debug(f"_create_arches_symlink({options.arch_mappings}, {working_path}, {arches})")
     for arch in arches:
         if not arch in options.arch_mappings:
             continue
@@ -330,6 +331,7 @@ def create_arches_symlinks(options: Options, working_path: Path, arches: t.List[
             os.symlink(link_dir, f"./{arch}")
         except OSError as err:
             raise TagFailure(f"Unable to symlink arch {arch}") from err
+    _log.info("creating arches symlink ok")
 
 def create_compat_symlink(working_path: Path):
     """
