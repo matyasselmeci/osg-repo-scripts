@@ -16,6 +16,7 @@ import re
 
 from distrepos.error import DiskFullError, TagFailure
 from distrepos.params import Options, Tag, ReleaseSeries
+from distrepos.symlink_utils import link_arch_mapping
 from distrepos.util import (
     RSYNC_NOT_FOUND,
     RSYNC_OK,
@@ -316,6 +317,20 @@ def run_createrepo(working_path: Path, arches: t.List[str]):
         else:
             raise TagFailure(f"Error {description}")
 
+def create_arches_symlinks(options: Options, working_path: Path, arches: t.List[str]):
+    """
+    Create relative symlinks from dest_arch to src_arc based on config provided
+    in `options.arch_mapping`. Ensures compatibility between systems with different
+    names for similar arches (eg. x86_64_v2 in koji and x86_64 on some destination hosts)
+    """
+    for arch in arches:
+        if not arch in options.arch_mappings:
+            continue
+        try:
+            link_dir = working_path / options.arch_mappings[arch]
+            os.symlink(link_dir, f"./{arch}")
+        except OSError as err:
+            raise TagFailure(f"Unable to symlink arch {arch}") from err
 
 def create_compat_symlink(working_path: Path):
     """
@@ -453,6 +468,7 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
         update_pkglist_files(working_path, tag.arches)
         run_createrepo(working_path, tag.arches)
         create_compat_symlink(working_path)
+        create_arches_symlinks(options, working_path, tag.arches)
         update_release_repos(
             release_path=release_path,
             working_path=working_path,
