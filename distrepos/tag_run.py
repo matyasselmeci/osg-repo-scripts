@@ -16,7 +16,6 @@ import re
 
 from distrepos.error import DiskFullError, TagFailure
 from distrepos.params import Options, Tag, ReleaseSeries
-from distrepos.symlink_utils import link_arch_mapping
 from distrepos.util import (
     RSYNC_NOT_FOUND,
     RSYNC_OK,
