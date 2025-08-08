@@ -95,7 +95,7 @@ class Options(t.NamedTuple):
     mirror_prev_root: t.Optional[Path]
     mirror_hosts: t.List[str]
     tarball_install: str
-    arch_mappings: t.Dict[str, t.List[str]]
+    arch_mappings: t.Dict[str, str]
 
 
 class ActionType(str, Enum):
