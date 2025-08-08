@@ -328,7 +328,7 @@ def create_arches_symlinks(options: Options, working_path: Path, arches: t.List[
             continue
         try:
             link_dir = working_path / options.arch_mappings[arch]
-            os.symlink(link_dir, f"./{arch}")
+            os.symlink(f"./{arch}", link_dir)
         except OSError as err:
             raise TagFailure(f"Unable to symlink arch {arch}") from err
     _log.info("creating arches symlink ok")
