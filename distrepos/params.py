@@ -95,6 +95,7 @@ class Options(t.NamedTuple):
     mirror_prev_root: t.Optional[Path]
     mirror_hosts: t.List[str]
     tarball_install: str
+    arch_mappings: t.Dict[str, str]
 
 
 class ActionType(str, Enum):
@@ -423,6 +424,15 @@ def get_options(args: Namespace, config: ConfigParser) -> Options:
     mirror_working_root = None if mirror_root is None else mirror_root + '.working'
     mirror_prev_root = None if mirror_root is None else mirror_root + '.prev'
     mirror_hosts = options_section.get("mirror_hosts", "").split()
+    
+    # Convert "arch1 -> arch2" multiline string into {"arch1":"arch2"} dict
+    arch_mappings = {
+        k.strip(): v.strip() for k,v in 
+        (kv for kv in ( 
+            line.split("->",1) for line in options_section.get("arch_mappings", "").split('\n')
+        ) if len(kv) == 2)
+    }
+
     options = Options(
         dest_root=Path(dest_root),
         working_root=Path(working_root),
@@ -436,7 +446,8 @@ def get_options(args: Namespace, config: ConfigParser) -> Options:
         mirror_working_root=mirror_working_root,
         mirror_prev_root=mirror_prev_root,
         mirror_hosts=mirror_hosts,
-        tarball_install=options_section.get("tarball_install", DEFAULT_TARBALL_INSTALL_DIR)
+        tarball_install=options_section.get("tarball_install", DEFAULT_TARBALL_INSTALL_DIR),
+        arch_mappings=arch_mappings
     )
     return options
 
