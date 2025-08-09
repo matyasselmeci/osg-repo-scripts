@@ -47,7 +47,7 @@ from distrepos.params import (
 from distrepos.tag_run import run_one_tag
 from distrepos.mirror_run import update_mirrors_for_tag
 from distrepos.symlink_utils import link_static_data, link_latest_release
-from distrepos.util import lock_context, check_rsync, log_ml, run_with_log
+from distrepos.util import TagLogger, lock_context, check_rsync, log_ml, run_with_log
 from distrepos.tarball_sync import update_tarball_dirs
 
 from datetime import datetime
@@ -180,7 +180,8 @@ def _run_one_tag_wrapper(options: Options, tag: Tag) -> t.Optional[str]:
         None on success, an error string on failure
     """
     # _log.info("----------------------------------------")
-    _log.info("%s: Starting tag", tag.name)
+    log = TagLogger(_log, {"tag": tag.name})
+    log.info("Starting tag")
     log_ml(
         logging.DEBUG,
         "%s",
@@ -190,16 +191,16 @@ def _run_one_tag_wrapper(options: Options, tag: Tag) -> t.Optional[str]:
             condor_rsync=options.condor_rsync,
             destroot=options.dest_root,
         ),
-        prefix=f"{tag.name}: ",
+        log=log,
     )
     tag_start_time = datetime.now()
     ok, err = run_one_tag(options, tag)
     tag_elapsed_time = datetime.now() - tag_start_time
     if ok:
-        _log.info("%s: Tag completed in %s", tag.name, tag_elapsed_time)
+        log.info("Tag completed in %s", tag_elapsed_time)
         return None
     else:
-        _log.error("%s: Tag failed in %s", tag.name, tag_elapsed_time)
+        log.error("Tag failed in %s", tag_elapsed_time)
         return err
 
 

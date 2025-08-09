@@ -12,14 +12,14 @@ import subprocess as sp
 import tempfile
 import typing as t
 from pathlib import Path
-import re
 
 from distrepos.error import DiskFullError, TagFailure
-from distrepos.params import Options, Tag, ReleaseSeries
+from distrepos.params import Options, Tag
 from distrepos.util import (
+    MaybeLogger,
     RSYNC_NOT_FOUND,
     RSYNC_OK,
-    acquire_lock,
+    TagLogger, acquire_lock,
     log_rsync,
     release_lock,
     rsync,
@@ -28,7 +28,8 @@ from distrepos.util import (
     run_with_log,
 )
 
-_log = logging.getLogger(__name__)
+
+_module_logger = logging.getLogger(__name__)
 
 
 #
@@ -36,7 +37,7 @@ _log = logging.getLogger(__name__)
 #
 
 
-def get_koji_latest_dir(koji_rsync: str, tagdir: str) -> str:
+def get_koji_latest_dir(koji_rsync: str, tagdir: str, log: MaybeLogger = None) -> str:
     """
     Resolves the "latest" symlink for the dist-repo on koji-hub by downloading
     the symlink to a temporary directory and reading it.  (We don't want to use
@@ -50,7 +51,7 @@ def get_koji_latest_dir(koji_rsync: str, tagdir: str) -> str:
             )
         except sp.TimeoutExpired:
             raise TagFailure("Timeout getting 'latest' dir")
-        log_rsync(proc, "Getting 'latest' dir symlink")
+        log_rsync(proc, "Getting 'latest' dir symlink", log=log)
         if not ok:
             if proc.returncode == RSYNC_NOT_FOUND:
                 raise TagFailure(
@@ -64,27 +65,29 @@ def get_koji_latest_dir(koji_rsync: str, tagdir: str) -> str:
         return os.path.basename(os.readlink(destpath))
 
 
-def rsync_from_koji(source_url, dest_path, link_path):
+def rsync_from_koji(source_url, dest_path, link_path, log: MaybeLogger = None):
     """
     rsync the distrepo from kojihub for one tag, linking to the RPMs in
     the previous repo if they exist
     """
-    _log.debug("rsync_from_koji(%r, %r, %r)", source_url, dest_path, link_path)
+    log = log or _module_logger
+    log.debug("rsync_from_koji(%r, %r, %r)", source_url, dest_path, link_path)
     description = f"rsync from {source_url} to {dest_path}"
-    ok, proc = rsync_with_link(source_url, dest_path, link_path)
-    log_rsync(proc, description)
+    ok, proc = rsync_with_link(source_url, dest_path, link_path, log=log)
+    log_rsync(proc, description, log=log)
     if not ok:
         if rsync_disk_is_full(proc):
             raise DiskFullError(description)
         raise TagFailure(f"Error with {description}")
-    _log.info("%s ok", description)
+    log.info("%s ok", description)
 
 
-def pull_condor_repos(options: Options, tag: Tag):
+def pull_condor_repos(options: Options, tag: Tag, log: MaybeLogger = None):
     """
     rsync binary and source RPMs from condor repos defined for this tag.
     """
-    _log.debug("pull_condor_repos(%r)", tag.name)
+    log = log or _module_logger
+    log.debug("pull_condor_repos(%r)", tag.name)
 
     condor_rsync = options.condor_rsync
     working_root = options.working_root
@@ -133,9 +136,9 @@ def pull_condor_repos(options: Options, tag: Tag):
                 delete=False,
                 recursive=False,
             )
-            log_rsync(proc, description)
+            log_rsync(proc, description, log=log)
             if ok:
-                _log.info("%s ok", description)
+                log.info("%s ok", description)
             else:
                 if rsync_disk_is_full(proc):
                     raise DiskFullError(description)
@@ -149,14 +152,15 @@ def pull_condor_repos(options: Options, tag: Tag):
                 debug_rpms_link,
                 delete=False,
                 recursive=False,
+                log=log,
             )
-            log_rsync(proc, description, not_found_is_ok=True)
+            log_rsync(proc, description, not_found_is_ok=True, log=log)
             if proc.returncode not in {RSYNC_OK, RSYNC_NOT_FOUND}:
                 if rsync_disk_is_full(proc):
                     raise DiskFullError(description)
                 raise TagFailure(f"Error pulling condor repos: {description}")
             else:
-                _log.info("%s ok", description)
+                log.info("%s ok", description)
 
             # Finally pull the SRPMs -- these are identical between arches so only
             # pull if we're on the first arch.
@@ -168,23 +172,25 @@ def pull_condor_repos(options: Options, tag: Tag):
                     source_rpms_link,
                     delete=False,
                     recursive=False,
+                    log=log,
                 )
-                log_rsync(proc, description)
+                log_rsync(proc, description, log=log)
                 if ok:
-                    _log.info("%s ok", description)
+                    log.info("%s ok", description)
                 else:
                     if rsync_disk_is_full(proc):
                         raise DiskFullError(description)
                     raise TagFailure(f"Error pulling condor repos: {description}")
 
 
-def update_pkglist_files(working_path: Path, arches: t.List[str]):
+def update_pkglist_files(working_path: Path, arches: t.List[str], log: MaybeLogger = None):
     """
     Update the "pkglist" files with the relative paths of the RPM files, including
     files that were pulled from the condor repos.  Put debuginfo files in a separate
     pkglist.
     """
-    _log.debug("update_pkglist_files(%r, %r)", working_path, arches)
+    log = log or _module_logger
+    log.debug("update_pkglist_files(%r, %r)", working_path, arches)
     # Update pkglist files for SRPMs.  There's no such thing as a debuginfo SRPM so
     # we don't have to handle those.
     src_dir = working_path / "src"
@@ -210,7 +216,7 @@ def update_pkglist_files(working_path: Path, arches: t.List[str]):
 
         # New file written; move it into place, overwriting the old one.
         shutil.move(f"{src_pkglist}.new", src_pkglist)
-        _log.info("Updating %s ok", src_pkglist)
+        log.info("Updating %s ok", src_pkglist)
     except OSError as err:
         description = f"updating pkglist file {src_pkglist}"
         if err.errno == errno.ENOSPC:
@@ -254,9 +260,9 @@ def update_pkglist_files(working_path: Path, arches: t.List[str]):
 
             # New files written; move them into place, overwriting old ones.
             shutil.move(f"{arch_pkglist}.new", arch_pkglist)
-            _log.info("Updating %s ok", arch_pkglist)
+            log.info("Updating %s ok", arch_pkglist)
             shutil.move(f"{arch_debug_pkglist}.new", arch_debug_pkglist)
-            _log.info("Updating %s ok", arch_debug_pkglist)
+            log.info("Updating %s ok", arch_debug_pkglist)
         except OSError as err:
             description = (
                 f"updating pkglist files {arch_pkglist} and {arch_debug_pkglist}"
@@ -266,23 +272,27 @@ def update_pkglist_files(working_path: Path, arches: t.List[str]):
             raise TagFailure(f"OSError {description}: {err}") from err
 
 
-def run_createrepo(working_path: Path, arches: t.List[str]):
+def run_createrepo(working_path: Path, arches: t.List[str], log: MaybeLogger = None):
     """
     Run createrepo on the main, source, and debuginfo dirs under the given
     working path.
     """
-    _log.debug("run_createrepo(%r, %r)", working_path, arches)
+    log = log or _module_logger
+    log.debug("run_createrepo(%r, %r)", working_path, arches)
 
     # SRPMS
     src_dir = working_path / "src"
     src_pkglist = src_dir / "pkglist"
 
-    ok, proc = run_with_log(["createrepo_c", '--update', str(src_dir), f"--pkglist={src_pkglist}"])
+    ok, proc = run_with_log(
+        ["createrepo_c", '--update', str(src_dir), f"--pkglist={src_pkglist}"],
+        log=log,
+    )
     description = "running createrepo on SRPMs"
     if ok:
         repomd = src_dir / "repodata/repomd.xml"
         repomd.touch()
-        _log.info("%s ok", description)
+        log.info("%s ok", description)
     else:
         raise TagFailure(f"Error {description}")
 
@@ -291,13 +301,14 @@ def run_createrepo(working_path: Path, arches: t.List[str]):
         arch_dir = working_path / arch
         arch_pkglist = arch_dir / "pkglist"
         ok, proc = run_with_log(
-            ["createrepo_c",  '--update', str(arch_dir), f"--pkglist={arch_pkglist}"]
+            ["createrepo_c",  '--update', str(arch_dir), f"--pkglist={arch_pkglist}"],
+            log=log,
         )
         description = f"running createrepo on {arch} rpms"
         if ok:
             repomd = arch_dir / "repodata/repomd.xml"
             repomd.touch()
-            _log.info("%s ok", description)
+            log.info("%s ok", description)
         else:
             raise TagFailure(f"Error {description}")
 
@@ -306,23 +317,31 @@ def run_createrepo(working_path: Path, arches: t.List[str]):
         if not arch_debug_dir.exists():
             continue
         ok, proc = run_with_log(
-            ["createrepo_c",  '--update', str(arch_debug_dir), f"--pkglist={arch_debug_pkglist}"]
+            ["createrepo_c",  '--update', str(arch_debug_dir), f"--pkglist={arch_debug_pkglist}"],
+            log=log,
         )
         description = f"running createrepo on {arch} debuginfo rpms"
         if ok:
             repomd = arch_debug_dir / "repodata/repomd.xml"
             repomd.touch()
-            _log.info("%s ok", description)
+            log.info("%s ok", description)
         else:
             raise TagFailure(f"Error {description}")
 
-def create_arches_symlinks(options: Options, working_path: Path, arches: t.List[str]):
+
+def create_arches_symlinks(
+        options: Options,
+        working_path: Path,
+        arches: t.List[str],
+        log: MaybeLogger = None,
+):
     """
     Create relative symlinks from dest_arch to src_arc based on config provided
     in `options.arch_mapping`. Ensures compatibility between systems with different
     names for similar arches (eg. x86_64_v2 in koji and x86_64 on some destination hosts)
     """
-    _log.debug(f"_create_arches_symlink({options.arch_mappings}, {working_path}, {arches})")
+    log = log or _module_logger
+    log.debug(f"_create_arches_symlink({options.arch_mappings}, {working_path}, {arches})")
     for arch in arches:
         if not arch in options.arch_mappings:
             continue
@@ -331,15 +350,16 @@ def create_arches_symlinks(options: Options, working_path: Path, arches: t.List[
             os.symlink(f"./{arch}", link_dir)
         except OSError as err:
             raise TagFailure(f"Unable to symlink arch {arch}") from err
-    _log.info("creating arches symlink ok")
+    log.info("creating arches symlink ok")
 
-def create_compat_symlink(working_path: Path):
+def create_compat_symlink(working_path: Path, log: MaybeLogger = None):
     """
     Create a symlink from
         <repo>/source/SRPMS (mash layout) -> <repo>/src (distrepo layout)
     (this needs to be a relative symlink because we're moving directories around)
     """
-    _log.debug("_create_compat_symlink(%r)", working_path)
+    log = log or _module_logger
+    log.debug("_create_compat_symlink(%r)", working_path)
     description = "creating SRPM compat symlink"
     try:
         (working_path / "source").mkdir(parents=True, exist_ok=True)
@@ -348,14 +368,20 @@ def create_compat_symlink(working_path: Path):
         os.symlink("../src", working_path / "source/SRPMS")
     except OSError as err:
         raise TagFailure(f"Error {description}") from err
-    _log.info("%s ok", description)
+    log.info("%s ok", description)
 
-def update_release_repos(release_path: Path, working_path: Path, previous_path: Path):
+def update_release_repos(
+        release_path: Path,
+        working_path: Path,
+        previous_path: Path,
+        log: MaybeLogger = None,
+):
     """
     Update the published repos by moving the published dir to the 'previous' dir
     and the working dir to the published dir.
     """
-    _log.debug(
+    log = log or _module_logger
+    log.debug(
         "update_release_repos(%r, %r, %r)",
         release_path,
         working_path,
@@ -364,7 +390,7 @@ def update_release_repos(release_path: Path, working_path: Path, previous_path: 
     failmsg = "Error updating release repos at %s" % release_path
     # Sanity check: make sure we have something to move
     if not working_path.exists():
-        _log.error("Cannot release new dir %s: it does not exist", working_path)
+        log.error("Cannot release new dir %s: it does not exist", working_path)
         raise TagFailure(failmsg)
 
     # If we have an old previous path, clear it; also make sure its parents exist.
@@ -375,12 +401,12 @@ def update_release_repos(release_path: Path, working_path: Path, previous_path: 
             else:
                 previous_path.unlink()
         except OSError as err:
-            _log.error(
+            log.error(
                 "OSError clearing previous dir %s: %s",
                 previous_path,
                 err,
             )
-            _log.debug("Traceback follows", exc_info=True)
+            log.debug("Traceback follows", exc_info=True)
             raise TagFailure(failmsg)
     previous_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -390,13 +416,13 @@ def update_release_repos(release_path: Path, working_path: Path, previous_path: 
         try:
             shutil.move(release_path, previous_path)
         except OSError as err:
-            _log.error(
+            log.error(
                 "OSError moving release dir %s to previous dir %s: %s",
                 release_path,
                 previous_path,
                 err,
             )
-            _log.debug("Traceback follows", exc_info=True)
+            log.debug("Traceback follows", exc_info=True)
             raise TagFailure(failmsg)
     release_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -404,27 +430,27 @@ def update_release_repos(release_path: Path, working_path: Path, previous_path: 
     try:
         shutil.move(working_path, release_path)
     except OSError as err:
-        _log.error(
+        log.error(
             "OSError moving working dir %s to release dir %s: %s",
             working_path,
             release_path,
             err,
         )
-        _log.debug("Traceback follows", exc_info=True)
+        log.debug("Traceback follows", exc_info=True)
         # Something failed. Undo, undo!
         if os.path.lexists(previous_path):
             try:
                 shutil.move(previous_path, release_path)
             except OSError as err2:
-                _log.error(
+                log.error(
                     "OSError moving previous dir %s back to release dir %s: %s",
                     previous_path,
                     release_path,
                     err2,
                 )
-                _log.debug("Traceback follows", exc_info=True)
+                log.debug("Traceback follows", exc_info=True)
         raise TagFailure(failmsg)
-    _log.info("Successfully released %s", release_path)
+    log.info("Successfully released %s", release_path)
 
 
 def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
@@ -438,6 +464,7 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
     Returns:
         An (ok, error message) tuple.
     """
+    log = TagLogger(_module_logger, {"tag": tag.name})
     release_path = options.dest_root / tag.dest
     working_path = options.working_root / tag.dest
     previous_path = options.previous_root / tag.dest
@@ -445,8 +472,8 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
         os.makedirs(working_path, exist_ok=True)
     except OSError as err:
         msg = f"OSError creating working dir {working_path}, {err}"
-        _log.error("%s", msg)
-        _log.debug("Traceback follows", exc_info=True)
+        log.error("%s", msg)
+        log.debug("Traceback follows", exc_info=True)
         return False, msg
 
     # Set up the lock file
@@ -460,24 +487,28 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
 
     # Run the various steps
     try:
-        latest_dir = get_koji_latest_dir(options.koji_rsync, tag.source)
+        latest_dir = get_koji_latest_dir(options.koji_rsync, tag.source, log=log)
         source_url = f"{options.koji_rsync}/{tag.source}/{latest_dir}/"
         rsync_from_koji(
-            source_url=source_url, dest_path=working_path, link_path=release_path
+            source_url=source_url,
+            dest_path=working_path,
+            link_path=release_path,
+            log=log,
         )
-        pull_condor_repos(options, tag)
-        update_pkglist_files(working_path, tag.arches)
-        run_createrepo(working_path, tag.arches)
-        create_compat_symlink(working_path)
-        create_arches_symlinks(options, working_path, tag.arches)
+        pull_condor_repos(options, tag, log=log)
+        update_pkglist_files(working_path, tag.arches, log=log)
+        run_createrepo(working_path, tag.arches, log=log)
+        create_compat_symlink(working_path, log=log)
+        create_arches_symlinks(options, working_path, tag.arches, log=log)
         update_release_repos(
             release_path=release_path,
             working_path=working_path,
             previous_path=previous_path,
+            log=log,
         )
     except TagFailure as err:
-        _log.error("Tag %s failed: %s", tag.name, err)
-        _log.debug("Traceback follows", exc_info=True)
+        log.error("Tag %s failed: %s", tag.name, err)
+        log.debug("Traceback follows", exc_info=True)
         return False, str(err)
     finally:
         # Release the lock
@@ -485,5 +516,5 @@ def run_one_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
             try:
                 release_lock(lock_fh, lock_path)
             except OSError as err:
-                _log.warning("OSError releasing lock file at %s: %s", lock_path, err)
+                log.warning("OSError releasing lock file at %s: %s", lock_path, err)
     return True, ""
