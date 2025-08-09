@@ -9,7 +9,6 @@ import logging.handlers
 import os
 import re
 import string
-import sys
 import typing as t
 from argparse import ArgumentParser, Namespace, RawDescriptionHelpFormatter
 from configparser import ConfigParser
