@@ -134,7 +134,7 @@ def rsync_repos(options: Options, tags: t.Sequence[Tag]) -> int:
     # Keep track of successes and failures.
     successful = []
     failed = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=options.parallelism) as executor:
         future_to_tag = {executor.submit(_run_one_tag_wrapper, options, tag): tag for tag in tags}
         for future in concurrent.futures.as_completed(future_to_tag):
             tag = future_to_tag[future]
