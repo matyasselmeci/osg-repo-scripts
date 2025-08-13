@@ -171,10 +171,11 @@ def rsync_repos(options: Options, tags: t.Sequence[Tag]) -> int:
 
 def _run_one_tag_wrapper(options: Options, tag: Tag) -> t.Optional[str]:
     """
+    A wrapper around run_one_tag(), timing it and returning the results.
 
     Args:
-        options:
-        tag:
+        options: The global Options object.
+        tag: The specific tag to run.
 
     Returns:
         None on success, an error string on failure

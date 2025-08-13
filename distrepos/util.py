@@ -383,7 +383,18 @@ def check_rsync(koji_rsync: str, log: MaybeLogger = None) -> None:
 
 
 class TagLogger(logging.LoggerAdapter):
+    """
+    This is a LoggerAdapter used to prefix the tag to log messages.
+    A LoggingAdapter wraps around an existing Logger instance and can be
+    used instead of it.  See
+    <https://docs.python.org/3/howto/logging-cookbook.html#using-loggeradapters-to-impart-contextual-information>
+    for more information.
+    """
+
     def process(self, msg, kwargs):
+        """
+        Prefix the log message with the tag, if applicable.
+        """
         tag = self.extra.get("tag", "")
         if tag and isinstance(tag, str):
             return "[%s] %s" % (tag, msg), kwargs
