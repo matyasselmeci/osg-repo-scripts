@@ -101,7 +101,10 @@ def release_lock(lock_fh: t.Optional[t.IO], lock_path: t.Optional[str]):
 #
 
 
-def log_ml(lvl: int, msg: str, *args, log: t.Optional[logging.Logger] = None, **kwargs):
+MaybeLogger = t.Union[None, logging.Logger, logging.LoggerAdapter]
+
+
+def log_ml(lvl: int, msg: str, *args, log: MaybeLogger = None, **kwargs):
     """
     Log a potentially multi-line message by splitting the lines and doing
     individual calls to log.log().  exc_info and stack_info will only be
@@ -146,7 +149,7 @@ def log_proc(
     failure_level=logging.ERROR,
     stdout_max_lines=24,
     stderr_max_lines=40,
-    log: t.Optional[logging.Logger] = None,
+    log: MaybeLogger = None,
 ) -> None:
     """
     Print the result of a process in the log; the loglevel is determined by
@@ -202,7 +205,7 @@ def run_with_log(
     failure_level=logging.ERROR,
     stdout_max_lines=24,
     stderr_max_lines=40,
-    log: t.Optional[logging.Logger] = None,
+    log: MaybeLogger = None,
     **kwargs,
 ) -> t.Tuple[bool, sp.CompletedProcess]:
     """
@@ -242,7 +245,7 @@ def run_with_log(
 
 
 def rsync(
-    *args, log: t.Optional[logging.Logger] = None, **kwargs
+    *args, log: MaybeLogger = None, **kwargs
 ) -> t.Tuple[bool, sp.CompletedProcess]:
     """
     A wrapper around `subprocess.run` that runs rsync, capturing the output
@@ -271,7 +274,7 @@ def rsync_with_link(
     recursive=True,
     delete=True,
     links=False,
-    log: t.Optional[logging.Logger] = None,
+    log: MaybeLogger = None,
 ) -> t.Tuple[bool, sp.CompletedProcess]:
     """
     rsync from a remote URL sourcepath to the destination destpath, optionally
@@ -307,7 +310,7 @@ def log_rsync(
     success_level=logging.DEBUG,
     failure_level=logging.ERROR,
     not_found_is_ok=False,
-    log: t.Optional[logging.Logger] = None,
+    log: MaybeLogger = None,
 ):
     """
     log the result of an rsync() call.  The log level and message are based on
@@ -356,7 +359,7 @@ def match_globlist(text: str, globlist: t.List[str]) -> bool:
     return any(fnmatch.fnmatch(text, g) for g in globlist)
 
 
-def check_rsync(koji_rsync: str, log: t.Optional[logging.Logger] = None) -> None:
+def check_rsync(koji_rsync: str, log: MaybeLogger = None) -> None:
     """
     Run an rsync listing of the rsync root. If this fails, there is no point
     in proceeding further.
@@ -377,3 +380,23 @@ def check_rsync(koji_rsync: str, log: t.Optional[logging.Logger] = None) -> None
     )
     if not ok:
         raise RsyncError("rsync dir listing from koji-hub failed, cannot continue")
+
+
+class TagLogger(logging.LoggerAdapter):
+    """
+    This is a LoggerAdapter used to prefix the tag to log messages.
+    A LoggingAdapter wraps around an existing Logger instance and can be
+    used instead of it.  See
+    <https://docs.python.org/3/howto/logging-cookbook.html#using-loggeradapters-to-impart-contextual-information>
+    for more information.
+    """
+
+    def process(self, msg, kwargs):
+        """
+        Prefix the log message with the tag, if applicable.
+        """
+        tag = self.extra.get("tag", "")
+        if tag and isinstance(tag, str):
+            return "[%s] %s" % (tag, msg), kwargs
+        else:
+            return msg, kwargs

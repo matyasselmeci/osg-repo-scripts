@@ -9,7 +9,6 @@ import logging.handlers
 import os
 import re
 import string
-import sys
 import typing as t
 from argparse import ArgumentParser, Namespace, RawDescriptionHelpFormatter
 from configparser import ConfigParser
@@ -28,6 +27,7 @@ DEFAULT_DESTROOT = "/data/repo"
 DEFAULT_KOJI_RSYNC = "rsync://kojihub2000.chtc.wisc.edu/repos-dist"
 DEFAULT_TARBALL_RSYNC = "rsync://rsync.cs.wisc.edu/vdt/"
 DEFAULT_LOCK_DIR = "/var/lock/rsync_dist_repo"
+DEFAULT_PARALLELISM = 1
 
 DEFAULT_TARBALL_INSTALL_DIR = 'tarball-install'
 
@@ -96,6 +96,7 @@ class Options(t.NamedTuple):
     mirror_hosts: t.List[str]
     tarball_install: str
     arch_mappings: t.Dict[str, str]
+    parallelism: int
 
 
 class ActionType(str, Enum):
@@ -424,6 +425,13 @@ def get_options(args: Namespace, config: ConfigParser) -> Options:
     mirror_working_root = None if mirror_root is None else mirror_root + '.working'
     mirror_prev_root = None if mirror_root is None else mirror_root + '.prev'
     mirror_hosts = options_section.get("mirror_hosts", "").split()
+
+    try:
+        parallelism = options_section.getint("parallelism", None) or DEFAULT_PARALLELISM
+        if parallelism < 1:
+            raise ValueError("Cannot be zero or negative")
+    except ValueError as err:
+        raise ConfigError("Invalid parallelism: %s" % err)
     
     # Convert "arch1 -> arch2" multiline string into {"arch1":"arch2"} dict
     arch_mappings = {
@@ -447,7 +455,8 @@ def get_options(args: Namespace, config: ConfigParser) -> Options:
         mirror_prev_root=mirror_prev_root,
         mirror_hosts=mirror_hosts,
         tarball_install=options_section.get("tarball_install", DEFAULT_TARBALL_INSTALL_DIR),
-        arch_mappings=arch_mappings
+        arch_mappings=arch_mappings,
+        parallelism=parallelism,
     )
     return options
 

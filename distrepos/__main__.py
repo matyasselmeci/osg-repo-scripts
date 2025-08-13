@@ -26,6 +26,7 @@ repo -- this is passed to `createrepo` to put the debuginfo and debugsource RPMs
 separate repositories even though the files are mixed together.
 """
 
+import concurrent.futures
 import logging
 import sys
 import typing as t
@@ -46,7 +47,7 @@ from distrepos.params import (
 from distrepos.tag_run import run_one_tag
 from distrepos.mirror_run import update_mirrors_for_tag
 from distrepos.symlink_utils import link_static_data, link_latest_release
-from distrepos.util import lock_context, check_rsync, log_ml, run_with_log
+from distrepos.util import TagLogger, lock_context, check_rsync, log_ml, run_with_log
 from distrepos.tarball_sync import update_tarball_dirs
 
 from datetime import datetime
@@ -133,28 +134,15 @@ def rsync_repos(options: Options, tags: t.Sequence[Tag]) -> int:
     # Keep track of successes and failures.
     successful = []
     failed = []
-    for tag in tags:
-        _log.info("----------------------------------------")
-        _log.info("Starting tag %s", tag.name)
-        log_ml(
-            logging.DEBUG,
-            "%s",
-            format_tag(
-                tag,
-                koji_rsync=options.koji_rsync,
-                condor_rsync=options.condor_rsync,
-                destroot=options.dest_root,
-            ),
-        )
-        tag_start_time = datetime.now()
-        ok, err = run_one_tag(options, tag)
-        tag_elapsed_time = datetime.now() - tag_start_time
-        if ok:
-            _log.info("Tag %s completed in %s", tag.name, tag_elapsed_time)
-            successful.append(tag)
-        else:
-            _log.error("Tag %s failed in %s", tag.name, tag_elapsed_time)
-            failed.append((tag, err))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=options.parallelism) as executor:
+        future_to_tag = {executor.submit(_run_one_tag_wrapper, options, tag): tag for tag in tags}
+        for future in concurrent.futures.as_completed(future_to_tag):
+            tag = future_to_tag[future]
+            err = future.result()
+            if err:
+                failed.append((tag, err))
+            else:
+                successful.append(tag)
 
     total_elapsed_time = datetime.now() - total_start_time
     _log.info("----------------------------------------")
@@ -179,6 +167,43 @@ def rsync_repos(options: Options, tags: t.Sequence[Tag]) -> int:
         return ERR_EMPTY
 
     return 0
+
+
+def _run_one_tag_wrapper(options: Options, tag: Tag) -> t.Optional[str]:
+    """
+    A wrapper around run_one_tag(), timing it and returning the results.
+
+    Args:
+        options: The global Options object.
+        tag: The specific tag to run.
+
+    Returns:
+        None on success, an error string on failure
+    """
+    # _log.info("----------------------------------------")
+    log = TagLogger(_log, {"tag": tag.name})
+    log.info("Starting tag")
+    log_ml(
+        logging.DEBUG,
+        "%s",
+        format_tag(
+            tag,
+            koji_rsync=options.koji_rsync,
+            condor_rsync=options.condor_rsync,
+            destroot=options.dest_root,
+        ),
+        log=log,
+    )
+    tag_start_time = datetime.now()
+    ok, err = run_one_tag(options, tag)
+    tag_elapsed_time = datetime.now() - tag_start_time
+    if ok:
+        log.info("Tag completed in %s", tag_elapsed_time)
+        return None
+    else:
+        log.error("Tag failed in %s", tag_elapsed_time)
+        return err
+
 
 def update_cadist(options: Options) -> int:
     """
