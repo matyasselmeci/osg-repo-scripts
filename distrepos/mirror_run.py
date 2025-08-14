@@ -5,6 +5,7 @@ The main entry point is update_mirrors_for_tag(); other functions are helpers.
 
 import logging
 from distrepos.params import Options, Tag
+from distrepos.symlink_utils import create_arches_symlinks
 from distrepos.tag_run import update_release_repos
 import typing as t
 import socket
@@ -145,6 +146,8 @@ def update_mirrors_for_tag(options: Options, tag: Tag) -> t.Tuple[bool, str]:
 
         with open(working_path / arch, 'w') as mirrorf:
             mirrorf.write('\n'.join(good_mirrors) + '\n')
+
+    create_arches_symlinks(options, working_path, tag.arches, log=_log)
 
     update_release_repos(dest_path, working_path, prev_path)
 

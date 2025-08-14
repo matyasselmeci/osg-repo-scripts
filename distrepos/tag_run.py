@@ -15,6 +15,7 @@ from pathlib import Path
 
 from distrepos.error import DiskFullError, TagFailure
 from distrepos.params import Options, Tag
+from distrepos.symlink_utils import create_arches_symlinks
 from distrepos.util import (
     MaybeLogger,
     RSYNC_NOT_FOUND,
@@ -327,30 +328,6 @@ def run_createrepo(working_path: Path, arches: t.List[str], log: MaybeLogger = N
             log.info("%s ok", description)
         else:
             raise TagFailure(f"Error {description}")
-
-
-def create_arches_symlinks(
-        options: Options,
-        working_path: Path,
-        arches: t.List[str],
-        log: MaybeLogger = None,
-):
-    """
-    Create relative symlinks from dest_arch to src_arc based on config provided
-    in `options.arch_mapping`. Ensures compatibility between systems with different
-    names for similar arches (eg. x86_64_v2 in koji and x86_64 on some destination hosts)
-    """
-    log = log or _module_logger
-    log.debug(f"_create_arches_symlink({options.arch_mappings}, {working_path}, {arches})")
-    for arch in arches:
-        if not arch in options.arch_mappings:
-            continue
-        try:
-            link_dir = working_path / options.arch_mappings[arch]
-            os.symlink(f"./{arch}", link_dir)
-        except OSError as err:
-            raise TagFailure(f"Unable to symlink arch {arch}") from err
-    log.info("creating arches symlink ok")
 
 def create_compat_symlink(working_path: Path, log: MaybeLogger = None):
     """
