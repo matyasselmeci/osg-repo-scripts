@@ -2,10 +2,14 @@
 Set of utilities for setting up symlinks within the repo webserver.
 """
 
+import os
 import typing as t
 from pathlib import Path
+from distrepos.error import TagFailure
 from distrepos.params import Options, ReleaseSeries
 import re
+
+from distrepos.util import MaybeLogger
 
 
 def link_static_data(options: Options, repo_name: str = "osg") -> t.Tuple[bool, str]:
@@ -112,3 +116,25 @@ def link_latest_release(options: Options, release_series: t.List[ReleaseSeries])
                 latest_symlink.symlink_to(latest_symlink_target)
 
     return True, ""
+
+def create_arches_symlinks(
+        options: Options,
+        working_path: Path,
+        arches: t.List[str],
+        log: MaybeLogger = None,
+):
+    """
+    Create relative symlinks from dest_arch to src_arc based on config provided
+    in `options.arch_mapping`. Ensures compatibility between systems with different
+    names for similar arches (eg. x86_64_v2 in koji and x86_64 on some destination hosts)
+    """
+    log.debug(f"_create_arches_symlink({options.arch_mappings}, {working_path}, {arches})")
+    for arch in arches:
+        if not arch in options.arch_mappings:
+            continue
+        try:
+            link_dir = working_path / options.arch_mappings[arch]
+            os.symlink(f"./{arch}", link_dir)
+        except OSError as err:
+            raise TagFailure(f"Unable to symlink arch {arch}") from err
+    log.info("creating arches symlink ok")
